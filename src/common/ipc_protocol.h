@@ -114,6 +114,7 @@ enum class IpcCommand : uint32_t {
 	AccessPciConfig        = 0x008C,
 	GetSystemModules       = 0x008D,  // kernel modules
 	ResolveAddressSpace    = 0x008E,  // the target's page-table root (CR3) by several methods
+	ConfigureTransparency  = 0x008F,  // hide the debugger's time from the target's clock
 
 	// Lifecycle
 	GetCapabilities        = 0x00FC,  // backend identity and per-command support (older peers answer InvalidArgs)
@@ -1538,6 +1539,20 @@ struct AddressSpaceCandidate {
 	AddressSpaceMethod method;
 	uint32_t valid;
 };
+// Timing transparency: the target's RDTSC/RDTSCP (and the time sources built
+// on them) exclude the time the debugger holds it.
+struct ConfigureTransparencyRequest {
+	uint32_t timing;            // 0 off, 1 on, 2 unchanged
+	uint32_t measure;           // 1: time CPUID as a process sees it, without and with the compensation
+};
+struct ConfigureTransparencyResponse {
+	IpcStatus status;
+	uint32_t  timing;           // now on for the target
+	uint64_t  exitCost;         // estimated cycles one hypervisor round trip adds
+	uint64_t  cpuidCycles;      // measure: CPUID as seen without compensation
+	uint64_t  cpuidCyclesHidden; // measure: ... with it
+};
+
 struct ResolveAddressSpaceResponse {
 	IpcStatus status;
 	uint32_t  count;            // AddressSpaceCandidate[count] follow

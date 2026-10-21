@@ -1491,6 +1491,13 @@ std::vector<McpServer::ToolDef> McpServer::BuildAllToolsList() {
 				{"filter", {{"type", "string"}, {"description", "Case-insensitive substring of the path"}}}
 			 }}}}}),
 
+		Tool(&McpServer::ToolTransparency, "system", 0, true,
+			{{"name", "veh_transparency"}, {"description", "Timing transparency against anti-debug timing checks: with timing=on the target's RDTSC/RDTSCP (and clocks built on them) exclude the time the debugger holds it (stops, steps, hypervisor round trips); its clock stays monotonic. measure=true times CPUID as a process sees it without and with the compensation. Needs a hypervisor backend."},
+			 {"inputSchema", {{"type", "object"}, {"properties", {
+				{"timing", {{"type", "string"}, {"enum", json::array({"on", "off"})}, {"description", "Omit to leave it unchanged"}}},
+				{"measure", {{"type", "boolean"}, {"description", "Report CPUID latency without and with the compensation"}}}
+			 }}}}}),
+
 		Tool(&McpServer::ToolAddressSpace, "system", 0, true,
 			{{"name", "veh_address_space"}, {"description", "The target's page-table root (CR3) by several methods, each checked by reading the PEB through it: the process object's record, the isolation user root, the root seen with its threads, a probe of every root the processors load, and a physical-memory scan. use=chosen makes later memory access use the chosen root (for targets that tamper with their process object); use=os reverts. Needs a hypervisor backend."},
 			 {"inputSchema", {{"type", "object"}, {"properties", {

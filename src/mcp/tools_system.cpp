@@ -530,6 +530,21 @@ json McpServer::ToolPci(const json& args) {
 	return {{"error", "operation must be tree, read, or write"}};
 }
 
+json McpServer::ToolTransparency(const json& args) {
+	const std::string timing = args.value("timing", "");
+	if (!timing.empty() && timing != "on" && timing != "off") return {{"error", "timing must be on or off"}};
+	ConfigureTransparencyRequest req{timing == "on" ? 1u : timing == "off" ? 0u : 2u, JsonBool(args, "measure", false) ? 1u : 0u};
+	json error;
+	std::vector<uint8_t> resp;
+	if (!SystemExchange(IpcCommand::ConfigureTransparency, &req, sizeof(req), resp, error)) return error;
+	if (resp.size() < sizeof(ConfigureTransparencyResponse)) return {{"error", "short response"}};
+	const auto* r = reinterpret_cast<const ConfigureTransparencyResponse*>(resp.data());
+	if (r->status != IpcStatus::Ok) return {{"error", StatusText(r->status)}};
+	json out = {{"timing", r->timing ? "on" : "off"}, {"exit_cost_cycles", r->exitCost}};
+	if (req.measure) out["cpuid_cycles"] = {{"seen_without", r->cpuidCycles}, {"seen_with", r->cpuidCyclesHidden}};
+	return out;
+}
+
 json McpServer::ToolAddressSpace(const json& args) {
 	static const char* const names[] = {"auto", "kernel_record", "user_shadow", "observed", "probe", "scan", "all"};
 	const std::string method = args.value("method", "auto");

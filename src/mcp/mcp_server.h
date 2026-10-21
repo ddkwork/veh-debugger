@@ -110,6 +110,7 @@ private:
 	json ToolPci(const json& args);
 	json ToolKernelModules(const json& args);
 	json ToolAddressSpace(const json& args);
+	json ToolTransparency(const json& args);
 	bool SystemExchange(IpcCommand cmd, const void* payload, uint32_t size, std::vector<uint8_t>& response, json& error);
 	std::vector<SystemModuleEntry> SystemModules(json& error);
 	static json KernelLocation(uint64_t address, const std::vector<SystemModuleEntry>& modules);
