@@ -13,6 +13,10 @@ namespace veh {
 
 class PipeClient : public IIpcTransport {
 public:
+	// Empty = the VEH DLL pipe of the target; otherwise the exact pipe name an
+	// out-of-process backend was told to serve.
+	explicit PipeClient(std::wstring pipeName = {}) : pipeName_(std::move(pipeName)) {}
+	uint32_t PeerProcessId() const override;
 	~PipeClient() override { Disconnect(); }
 
 	// Connect to VEH DLL's named pipe (overlapped)
@@ -50,6 +54,7 @@ private:
 	bool AsyncReadExact(void* buf, DWORD size, DWORD timeoutMs = 3000);
 	bool AsyncWriteExact(const void* buf, DWORD size, DWORD timeoutMs = 3000);
 
+	std::wstring pipeName_;
 	HANDLE pipe_ = INVALID_HANDLE_VALUE;
 	HANDLE stopEvent_ = nullptr;
 	std::atomic<bool> connected_{false};

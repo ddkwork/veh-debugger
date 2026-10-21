@@ -1,6 +1,7 @@
 #pragma once
 #include <string>
 #include <vector>
+#include <map>
 #include <optional>
 #include <atomic>
 #include <mutex>
@@ -144,7 +145,26 @@ public:
 	~DebugSession();
 
 	// --- Lifecycle ---
-	bool Attach(uint32_t pid);
+	// Out-of-process server of the same IPC protocol (see ConnectExternalAgent).
+	struct ExternalAgent {
+		std::string path;
+		std::vector<std::string> args; // appended after --pid/--pipe
+	};
+	// nullptr agent: inject the VEH DLL. Otherwise start or reuse that agent.
+	bool Attach(uint32_t pid, const ExternalAgent* agent = nullptr);
+
+	// What the connected backend reported through GetCapabilities. A peer that
+	// predates the command is the VEH DLL with every command (reported = false).
+	struct BackendInfo {
+		bool reported = false;
+		IpcBackend backend = IpcBackend::VehDll;
+		uint32_t flags = kCapStopsThreads;
+		uint8_t commands[32] = {};
+		std::string name = "veh-dll";
+		bool Supports(IpcCommand cmd) const { return !reported || IsCommandSupported(commands, cmd); }
+	};
+	void QueryBackendInfo();   // after Ready
+	const BackendInfo& GetBackendInfo() const { return backendInfo_; }
 	struct LaunchOptions {
 		std::string program;
 		std::vector<std::string> args;
@@ -470,6 +490,17 @@ private:
 	std::string GetDllPathForExe(const std::string& exePath);
 
 	std::unique_ptr<IIpcTransport> ipcTransport_;
+	std::wstring transportPipe_;     // pipe name ipcTransport_ was built for (empty = VEH DLL)
+	struct RunningAgent {
+		std::string path;
+		std::wstring pipe;
+		uint32_t processId;
+	};
+	std::map<uint32_t, RunningAgent> externalAgents_; // target pid -> agent we started
+	BackendInfo backendInfo_;
+	void UseTransport(const std::wstring& pipeName);
+	bool ConnectExternalAgent(uint32_t pid, const ExternalAgent& agent);
+	void FinishAttach(uint32_t pid);
 	std::unique_ptr<IDisassembler> disassembler_ = CreateDisassembler();
 
 	// Session state

@@ -871,6 +871,7 @@ void PipeServer::HandleCommand(uint32_t command, const uint8_t* payload, uint32_
 		HandleTraceCommand(command, payload, payloadSize);
 		break;
 
+	case IpcCommand::GetCapabilities:
 	case IpcCommand::Heartbeat:
 	case IpcCommand::Detach:
 	case IpcCommand::Terminate:
@@ -3094,6 +3095,35 @@ void PipeServer::HandleLifecycleCommand(uint32_t command, const uint8_t* payload
 
 	switch (cmd) {
 
+	case IpcCommand::GetCapabilities: {
+		GetCapabilitiesResponse resp{};
+		resp.status = IpcStatus::Ok;
+		resp.backend = IpcBackend::VehDll;
+		resp.flags = kCapStopsThreads;
+		strcpy_s(resp.name, "veh-dll");
+		// Every command HandleCommand routes to a handler.
+		static constexpr IpcCommand kImplemented[] = {
+			IpcCommand::SetBreakpoint, IpcCommand::RemoveBreakpoint, IpcCommand::SetHwBreakpoint,
+			IpcCommand::RemoveHwBreakpoint, IpcCommand::RemoveBreakpointByAddr, IpcCommand::SetModuleLoadStop,
+			IpcCommand::Continue, IpcCommand::StepOver, IpcCommand::StepInto, IpcCommand::StepOut,
+			IpcCommand::Pause, IpcCommand::TerminateThread, IpcCommand::SetInstructionPointer,
+			IpcCommand::GetThreads, IpcCommand::GetStackTrace, IpcCommand::GetRegisters, IpcCommand::GetModules,
+			IpcCommand::SetRegister, IpcCommand::SetRegisters, IpcCommand::IsThreadStopped, IpcCommand::FreezeThread,
+			IpcCommand::ReadMemory, IpcCommand::WriteMemory,
+			IpcCommand::ResolveSourceLine, IpcCommand::ResolveFunction, IpcCommand::EnumLocals,
+			IpcCommand::Symbolize, IpcCommand::DisplayType, IpcCommand::TraceCallers,
+			IpcCommand::AllocateMemory, IpcCommand::FreeMemory, IpcCommand::ExecuteShellcode,
+			IpcCommand::QueryMemoryMap, IpcCommand::SearchMemory, IpcCommand::ProtectMemory, IpcCommand::ValueScan,
+			IpcCommand::TraceRegister, IpcCommand::TraceMemory, IpcCommand::ResolveImport, IpcCommand::TraceCalls,
+			IpcCommand::TraceBasicBlocks,
+			IpcCommand::GetCapabilities, IpcCommand::Heartbeat, IpcCommand::Detach, IpcCommand::Terminate,
+			IpcCommand::Shutdown,
+		};
+		for (auto c : kImplemented)
+			SetCommandSupported(resp.commands, c);
+		SendResponse(command, &resp, sizeof(resp));
+		break;
+	}
 	case IpcCommand::Heartbeat: {
 		// 하트비트 응답 — HeartbeatAck 이벤트 전송
 		SendEvent(static_cast<uint32_t>(IpcEvent::HeartbeatAck));

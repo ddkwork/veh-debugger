@@ -1064,6 +1064,9 @@ std::vector<McpServer::ToolDef> McpServer::BuildAllToolsList() {
 			{{"name", "veh_attach"}, {"description", "Attach to a running process by PID. Injects VEH debugger DLL. Auto-detaches if already attached. Target process must be running (not CREATE_SUSPENDED)."},
 		 {"inputSchema", {{"type", "object"}, {"properties", {
 			{"pid", {{"type", "integer"}, {"description", "Process ID to attach to"}}},
+			{"backend", {{"type", "string"}, {"description", "veh (default): inject the VEH DLL. Any other name: an out-of-process agent registered in veh-backends.json next to the server (or VEH_BACKENDS); nothing is injected. The response's backend.unsupported lists tool families the backend cannot serve."}}},
+			{"agent", {{"type", "string"}, {"description", "Path of an out-of-process agent to use instead of a registered backend name. Started as: <agent> --pid <pid> --pipe <name> [agent_args]."}}},
+			{"agent_args", {{"type", "array"}, {"items", {{"type", "string"}}}, {"description", "Extra arguments for agent."}}},
 			{"logFile", {{"type", "string"}, {"description", "Enable server-side logging to this file path (e.g. 'veh-mcp.log'). Omit to disable logging."}}}
 		 }}, {"required", json::array({"pid"})}}}}),
 

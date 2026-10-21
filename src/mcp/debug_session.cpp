@@ -8,6 +8,8 @@
 #include <TlHelp32.h>
 #include <Psapi.h>
 #include <utility>
+#include <bcrypt.h>
+#pragma comment(lib, "bcrypt.lib")
 
 namespace veh {
 
@@ -87,9 +89,99 @@ DebugSession::~DebugSession() {
 	}
 }
 
-bool DebugSession::Attach(uint32_t pid) {
+void DebugSession::UseTransport(const std::wstring& pipeName) {
+	if (pipeName == transportPipe_) return;
+	ipcTransport_ = std::make_unique<PipeClient>(pipeName);
+	transportPipe_ = pipeName;
+}
+
+static std::wstring Widen(const std::string& s) {
+	std::wstring w(MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0), L'\0');
+	MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, w.data(), static_cast<int>(w.size()));
+	if (!w.empty()) w.pop_back();
+	return w;
+}
+
+static std::wstring QuoteArg(const std::wstring& a) {
+	return a.find_first_of(L" \t\"") == std::wstring::npos ? a : L"\"" + a + L"\"";
+}
+
+// Out-of-process server of this IPC protocol: started as
+//   <agent> --pid <pid> --pipe <name> [extra args]
+// on a pipe name chosen here, and accepted only if the process serving that
+// pipe is the one we started. An agent still running for the PID is reused.
+bool DebugSession::ConnectExternalAgent(uint32_t pid, const ExternalAgent& agent) {
+	std::error_code ec;
+	if (agent.path.empty() || !std::filesystem::exists(Widen(agent.path), ec)) {
+		lastAttachError_ = "External backend: agent not found at '" + agent.path + "'.";
+		return false;
+	}
+	auto running = externalAgents_.find(pid);
+	if (running != externalAgents_.end()) {
+		HANDLE h = OpenProcess(SYNCHRONIZE, FALSE, running->second.processId);
+		const bool alive = h && WaitForSingleObject(h, 0) == WAIT_TIMEOUT;
+		if (h) CloseHandle(h);
+		if (!alive || running->second.path != agent.path) externalAgents_.erase(running);
+	}
+	running = externalAgents_.find(pid);
+	if (running == externalAgents_.end()) {
+		uint64_t nonce = 0;
+		BCryptGenRandom(nullptr, reinterpret_cast<PUCHAR>(&nonce), sizeof(nonce), BCRYPT_USE_SYSTEM_PREFERRED_RNG);
+		wchar_t pipe[96];
+		swprintf_s(pipe, L"\\\\.\\pipe\\veh-ext-%u-%016llx", pid, static_cast<unsigned long long>(nonce));
+		std::wstring cmd = QuoteArg(Widen(agent.path)) + L" --pid " + std::to_wstring(pid) + L" --pipe " + pipe;
+		for (const auto& a : agent.args) cmd += L" " + QuoteArg(Widen(a));
+		STARTUPINFOW si = {sizeof(si)};
+		PROCESS_INFORMATION pi = {};
+		if (!CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+			lastAttachError_ = "External backend: failed to start agent (Win32 error " + std::to_string(GetLastError()) + ").";
+			return false;
+		}
+		CloseHandle(pi.hThread);
+		CloseHandle(pi.hProcess);
+		running = externalAgents_.emplace(pid, RunningAgent{agent.path, pipe, pi.dwProcessId}).first;
+	}
+	UseTransport(running->second.pipe);
+	if (!ipcTransport_->Connect(pid, 5000)) {
+		lastAttachError_ = "External backend: agent pipe for PID " + std::to_string(pid) + " did not come up within 5s.";
+		externalAgents_.erase(running);
+		return false;
+	}
+	if (ipcTransport_->PeerProcessId() != running->second.processId) {
+		ipcTransport_->Disconnect();
+		lastAttachError_ = "External backend: the pipe is served by another process; refusing it.";
+		externalAgents_.erase(running);
+		return false;
+	}
+	return true;
+}
+
+void DebugSession::QueryBackendInfo() {
+	backendInfo_ = {};
+	std::vector<uint8_t> resp;
+	if (!ipcTransport_->SendAndReceive(IpcCommand::GetCapabilities, nullptr, 0, resp, 1500)) return;
+	if (resp.size() < sizeof(GetCapabilitiesResponse)) return;   // older DLL: bare InvalidArgs
+	GetCapabilitiesResponse caps;
+	memcpy(&caps, resp.data(), sizeof(caps));
+	if (caps.status != IpcStatus::Ok) return;
+	backendInfo_.reported = true;
+	backendInfo_.backend = caps.backend;
+	backendInfo_.flags = caps.flags;
+	memcpy(backendInfo_.commands, caps.commands, sizeof(caps.commands));
+	backendInfo_.name.assign(caps.name, strnlen(caps.name, sizeof(caps.name)));
+}
+
+bool DebugSession::Attach(uint32_t pid, const ExternalAgent* agent) {
 	lastAttachError_.clear();
 	if (pid == 0) { lastAttachError_ = "invalid pid (0)"; return false; }
+	backendInfo_ = {};
+
+	if (agent) {
+		if (!ConnectExternalAgent(pid, *agent)) return false;
+		FinishAttach(pid);
+		return true;
+	}
+	UseTransport({});
 
 	if (IsProcessUninitializedSuspended(pid)) {
 		LOG_ERROR("Process %u appears to be in CREATE_SUSPENDED state", pid);
@@ -153,7 +245,11 @@ bool DebugSession::Attach(uint32_t pid) {
 	}
 	// 주: Ready 대기는 이벤트 리스너(reader) 시작 후에 해야 하므로 McpServer가
 	// SetEventCallback 직후 GetPipeClient().WaitForReady()를 호출한다(condvar 방식).
+	FinishAttach(pid);
+	return true;
+}
 
+void DebugSession::FinishAttach(uint32_t pid) {
 	targetPid_ = pid;
 	// VM_READ: 조건부 BP의 [addr]/value 평가가 이벤트 콜백 스레드에서 ReadProcessMemory로
 	// 값을 읽는다(IPC ReadMemory는 콜백 스레드에서 재진입 불가). 실패 시 VM_READ 없이 폴백.
@@ -174,12 +270,12 @@ bool DebugSession::Attach(uint32_t pid) {
 		disassembler_ = CreateDisassembler(is64);
 		LOG_INFO("Disassembler set to %s mode", is64 ? "x64" : "x86");
 	}
-
-	return true;
 }
 
 DebugSession::LaunchResult DebugSession::Launch(const LaunchOptions& opts) {
 	LaunchResult result;
+	backendInfo_ = {};
+	UseTransport({});
 
 	if (opts.program.empty()) {
 		result.error = "program is required";
@@ -1149,11 +1245,15 @@ EvalResult DebugSession::Evaluate(const std::string& expression, uint32_t thread
 TraceResult DebugSession::TraceCallers(uint64_t address, uint32_t durationSec) {
 	TraceResult result;
 
-	// Auto-resume
+	// Auto-resume. A backend that never stops threads (hypervisor) has nothing
+	// to resume or pause.
+	const bool stops = backendInfo_.Supports(IpcCommand::Continue);
 	ResumeMainThread();
-	ContinueRequest contReq = {};
-	contReq.threadId = 0;
-	ipcTransport_->SendCommand(IpcCommand::Continue, &contReq, sizeof(contReq));
+	if (stops) {
+		ContinueRequest contReq = {};
+		contReq.threadId = 0;
+		ipcTransport_->SendCommand(IpcCommand::Continue, &contReq, sizeof(contReq));
+	}
 
 	TraceCallersRequest req{};
 	req.address = address;
@@ -1161,15 +1261,13 @@ TraceResult DebugSession::TraceCallers(uint64_t address, uint32_t durationSec) {
 
 	std::vector<uint8_t> respData;
 	int timeoutMs = (durationSec + 10) * 1000;
-	if (!ipcTransport_->SendAndReceive(IpcCommand::TraceCallers, &req, sizeof(req), respData, timeoutMs)) {
+	const bool received = ipcTransport_->SendAndReceive(IpcCommand::TraceCallers, &req, sizeof(req), respData, timeoutMs);
+	// Auto-pause after collection
+	if (stops) {
 		PauseRequest pauseReq{}; pauseReq.threadId = 0;
 		ipcTransport_->SendCommand(IpcCommand::Pause, &pauseReq, sizeof(pauseReq));
-		return result;
 	}
-
-	// Auto-pause after collection
-	PauseRequest pauseReq{}; pauseReq.threadId = 0;
-	ipcTransport_->SendCommand(IpcCommand::Pause, &pauseReq, sizeof(pauseReq));
+	if (!received) return result;
 
 	// Drain stale stop events
 	{

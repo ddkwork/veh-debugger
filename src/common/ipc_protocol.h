@@ -98,6 +98,7 @@ enum class IpcCommand : uint32_t {
 	TraceBasicBlocks       = 0x0074,
 
 	// Lifecycle
+	GetCapabilities        = 0x00FC,  // backend identity and per-command support (older peers answer InvalidArgs)
 	Heartbeat              = 0x00FE,
 	Detach                 = 0x00F0,
 	Terminate              = 0x00F1,  // terminate the target from inside (bypasses external OpenProcess locks)
@@ -127,6 +128,7 @@ enum class IpcStatus : uint32_t {
 	Error                  = 1,
 	NotFound               = 2,
 	InvalidArgs            = 3,
+	Unsupported            = 4,  // the backend does not implement this command
 };
 
 // --- Payload structures ---
@@ -1354,6 +1356,36 @@ struct TraceCallersResponse {
 	uint32_t uniqueCallers;    // number of TraceCallerEntry following
 	// followed by: TraceCallerEntry[uniqueCallers]
 };
+
+// --- Backend capabilities ---
+// The same protocol is served by the in-process VEH DLL and by out-of-process
+// backends. Clients ask once after Ready; a peer that
+// predates the command answers a bare InvalidArgs status, which means "VEH DLL,
+// everything it knows".
+enum class IpcBackend : uint32_t { VehDll = 0, Hypervisor = 1 };
+
+constexpr uint32_t kCapStopsThreads        = 1u << 0;  // breakpoints/steps can hold a thread stopped
+constexpr uint32_t kCapHiddenBreakpoints   = 1u << 1;  // breakpoints do not modify target code bytes
+constexpr uint32_t kCapNoTargetFootprint   = 1u << 2;  // nothing is injected into the target process
+constexpr uint32_t kCapExecWriteTracking   = 1u << 3;  // writes to executed code are observed completely
+
+struct GetCapabilitiesResponse {
+	IpcStatus  status;
+	IpcBackend backend;
+	uint32_t   flags;          // kCap* bits
+	uint8_t    commands[32];   // bit n set = IpcCommand value n is implemented
+	char       name[32];       // human-readable backend name
+};
+
+inline void SetCommandSupported(uint8_t (&bits)[32], IpcCommand cmd) {
+	const uint32_t n = static_cast<uint32_t>(cmd);
+	if (n < 256) bits[n / 8] |= static_cast<uint8_t>(1u << (n % 8));
+}
+
+inline bool IsCommandSupported(const uint8_t (&bits)[32], IpcCommand cmd) {
+	const uint32_t n = static_cast<uint32_t>(cmd);
+	return n < 256 && (bits[n / 8] & (1u << (n % 8))) != 0;
+}
 
 #pragma pack(pop)
 

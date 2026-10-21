@@ -95,8 +95,13 @@ bool PipeClient::AsyncWriteExact(const void* buf, DWORD size, DWORD timeoutMs) {
 
 // --- Connection ---
 
+uint32_t PipeClient::PeerProcessId() const {
+	ULONG pid = 0;
+	return pipe_ != INVALID_HANDLE_VALUE && GetNamedPipeServerProcessId(pipe_, &pid) ? pid : 0;
+}
+
 bool PipeClient::Connect(uint32_t targetPid, int timeoutMs) {
-	std::wstring pipeName = GetPipeName(targetPid);
+	const std::wstring pipeName = pipeName_.empty() ? GetPipeName(targetPid) : pipeName_;
 
 	stopEvent_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
 

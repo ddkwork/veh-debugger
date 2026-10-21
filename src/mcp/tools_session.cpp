@@ -10,12 +10,96 @@
 #include <algorithm>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <optional>
 #include <limits>
 #include <stdexcept>
 #include <wincrypt.h>
 #pragma comment(lib, "advapi32.lib")
 
 namespace veh {
+
+namespace {
+
+// Commands a backend may leave out, named after the tools that need them.
+struct CommandName {
+	IpcCommand cmd;
+	const char* name;
+};
+constexpr CommandName kOptionalCommands[] = {
+	{IpcCommand::SetBreakpoint, "breakpoints"}, {IpcCommand::SetHwBreakpoint, "hw_breakpoints"},
+	{IpcCommand::SetModuleLoadStop, "module_load_stop"}, {IpcCommand::Continue, "continue"},
+	{IpcCommand::StepInto, "step"}, {IpcCommand::Pause, "pause"}, {IpcCommand::FreezeThread, "freeze_thread"},
+	{IpcCommand::GetThreads, "threads"}, {IpcCommand::GetStackTrace, "stack_trace"},
+	{IpcCommand::GetRegisters, "registers"}, {IpcCommand::SetRegisters, "set_registers"},
+	{IpcCommand::GetModules, "modules"}, {IpcCommand::ReadMemory, "read_memory"},
+	{IpcCommand::WriteMemory, "write_memory"}, {IpcCommand::ResolveSourceLine, "source_line"},
+	{IpcCommand::ResolveFunction, "resolve_function"}, {IpcCommand::EnumLocals, "locals"},
+	{IpcCommand::Symbolize, "symbolize"}, {IpcCommand::DisplayType, "display_type"},
+	{IpcCommand::TraceCallers, "trace_callers"}, {IpcCommand::AllocateMemory, "allocate_memory"},
+	{IpcCommand::ExecuteShellcode, "execute_shellcode"}, {IpcCommand::QueryMemoryMap, "memory_map"},
+	{IpcCommand::SearchMemory, "search_memory"}, {IpcCommand::ProtectMemory, "protect_memory"},
+	{IpcCommand::ValueScan, "value_scan"}, {IpcCommand::TraceRegister, "trace_register"},
+	{IpcCommand::TraceMemory, "trace_memory"}, {IpcCommand::ResolveImport, "resolve_import"},
+	{IpcCommand::TraceCalls, "trace_calls"}, {IpcCommand::TraceBasicBlocks, "trace_basic_blocks"},
+	{IpcCommand::Terminate, "terminate"},
+};
+
+// "agent" (path, optional "agent_args") or a "backend" name other than "veh"
+// selects an out-of-process agent. Names come from veh-backends.json next to the
+// server, or the file named by VEH_BACKENDS:
+//   { "<name>": { "path": "agent.exe", "args": ["..."] } }
+// Relative paths resolve against that file's folder.
+bool ResolveBackend(const json& args, std::optional<DebugSession::ExternalAgent>& out, std::string& error) {
+	auto strings = [](const json& j) {
+		std::vector<std::string> v;
+		if (j.is_array())
+			for (const auto& s : j)
+				if (s.is_string()) v.push_back(s.get<std::string>());
+		return v;
+	};
+	if (args.contains("agent") && args["agent"].is_string()) {
+		out = DebugSession::ExternalAgent{args["agent"].get<std::string>(), strings(args.value("agent_args", json::array()))};
+		return true;
+	}
+	const std::string name = args.value("backend", "veh");
+	if (name == "veh") return true;
+
+	std::filesystem::path file;
+	wchar_t env[MAX_PATH] = {};
+	if (GetEnvironmentVariableW(L"VEH_BACKENDS", env, MAX_PATH)) {
+		file = env;
+	} else {
+		wchar_t exe[MAX_PATH] = {};
+		GetModuleFileNameW(nullptr, exe, MAX_PATH);
+		file = std::filesystem::path(exe).parent_path() / "veh-backends.json";
+	}
+	std::ifstream in(file);
+	json table = in ? json::parse(in, nullptr, false) : json();
+	if (!table.is_object() || !table.contains(name) || !table[name].contains("path")) {
+		error = "Unknown backend '" + name + "' (not in " + file.string() + "). Use \"veh\", register it there, or pass \"agent\".";
+		return false;
+	}
+	std::filesystem::path path = table[name]["path"].get<std::string>();
+	if (path.is_relative()) path = file.parent_path() / path;
+	out = DebugSession::ExternalAgent{path.string(), strings(table[name].value("args", json::array()))};
+	return true;
+}
+
+json BackendSummary(const DebugSession::BackendInfo& info) {
+	json out = {{"name", info.name},
+		{"kind", info.backend == IpcBackend::Hypervisor ? "hypervisor" : "veh-dll"},
+		{"stopsThreads", (info.flags & kCapStopsThreads) != 0},
+		{"hiddenBreakpoints", (info.flags & kCapHiddenBreakpoints) != 0},
+		{"noTargetFootprint", (info.flags & kCapNoTargetFootprint) != 0}};
+	json missing = json::array();
+	for (const auto& c : kOptionalCommands)
+		if (!info.Supports(c.cmd)) missing.push_back(c.name);
+	if (!missing.empty()) out["unsupported"] = missing;
+	return out;
+}
+
+} // namespace
 
 json McpServer::ToolAttach(const json& args) {
 	if (args.contains("logFile") && args["logFile"].is_string()) {
@@ -34,8 +118,11 @@ json McpServer::ToolAttach(const json& args) {
 
 	uint32_t pid = JsonUint32(args, "pid");
 	if (pid == 0) return {{"error", "pid is required"}};
+	std::optional<DebugSession::ExternalAgent> agent;
+	if (std::string error; !ResolveBackend(args, agent, error))
+		return {{"error", error}};
 
-	if (!session_.Attach(pid)) {
+	if (!session_.Attach(pid, agent ? &*agent : nullptr)) {
 		std::string why = session_.LastAttachError();
 		if (why.empty()) why = "Attach failed for PID " + std::to_string(pid) + ". Check logs for details.";
 		return {{"error", why}};
@@ -50,9 +137,11 @@ json McpServer::ToolAttach(const json& args) {
 	if (!session_.GetPipeClient().WaitForReady(3000)) {
 		LOG_WARN("No Ready after attach/launch; proceeding (VEH may not be installed yet)");
 	}
+	session_.QueryBackendInfo();
 	session_.StartProcessMonitor();
 
 	json ret = {{"success", true}, {"pid", pid}, {"message", "Attached to process"}};
+	ret["backend"] = BackendSummary(session_.GetBackendInfo());
 	// Include main module info (saves a veh_modules round-trip)
 	auto modules = session_.GetModules();
 	if (!modules.empty()) {
