@@ -372,6 +372,26 @@ enabled = true
 | `veh_checkpoint_diff` | `id, other_id?` | checkpoint와 현재 상태 또는 다른 checkpoint의 register 및 변경 메모리 구간을 비교한다. |
 | `veh_checkpoint_delete` | `id` | checkpoint를 삭제하고 서버 메모리 예산을 반환한다. |
 
+**시스템 이벤트와 숨은 훅** (OS 아래에서 도는 하이퍼바이저 백엔드에 attach했을 때만 동작, 다른 백엔드는 사용 불가로 응답)
+
+| 도구 | 주요 인자 | 설명 |
+|------|-----------|------|
+| `veh_event` | `operation, type, value?/low?/high?, address?, size?, pid?, tid?, cpu?, mode?, action?` | 머신 전체 이벤트: `cpuid`, `msr_read`/`msr_write`, `exception`, `port_in`/`port_out`, `syscall`, `hypercall`, `xsetbv`, `rdtsc`, `memory_read`/`memory_write`/`memory_execute`. 조건(pid/tid/CPU/커널·유저/값 범위)에 맞으면 레지스터와 함께 기록. 가로챈 명령은 그대로 한 번 실제 실행되므로 대상은 차이를 보지 못한다. `action=stop`은 커널 디버거가 연결돼 있으면 머신 전체를 정지 |
+| `veh_event_records` | `max?, registers?` | 이벤트 기록 가져오기 (CPU, 프로세스/스레드, 모드, 값, rip/rsp/cr3, 타임스탬프) |
+| `veh_hidden_hook` | `operation, address, pid?, set?, return?, pop?` | 숨은 실행 훅: 주소가 실행될 때 레지스터를 바꾸거나(`set`) 함수를 즉시 반환값과 함께 돌려보냄(`return`, stdcall은 `pop`). 코드 바이트는 그대로, 스레드도 멈추지 않음. `pid` 생략 시 커널 주소 |
+
+**정지형 커널 디버깅** (GDB 원격 시리얼 프로토콜 스텁에 연결, 대상 프로세스 attach와 무관)
+
+| 도구 | 주요 인자 | 설명 |
+|------|-----------|------|
+| `veh_kd_connect` | `transport, address, baud?` | `pipe`(VM의 COM 포트를 연결한 호스트 named pipe), `com`, `tcp`. 연결하면 대상 머신의 모든 CPU가 정지 |
+| `veh_kd_continue` / `veh_kd_wait` / `veh_kd_break` | `wait?, timeout_ms?` | 재개, 다음 정지(브레이크포인트)까지 대기, 실행 중 정지(break-in) |
+| `veh_kd_step` | `cpu?, count?` | 한 CPU만 한 명령씩 실행 (나머지 CPU는 정지 유지) |
+| `veh_kd_registers` / `veh_kd_set_register` | `cpu?, name, value` | 정지한 CPU의 레지스터 (스텁이 주면 cr3, GS/FS base, IDT, CPL 포함) |
+| `veh_kd_memory` | `operation, address, size?/count?/data?, cpu?` | 정지한 CPU의 페이지 테이블로 커널/유저 메모리 읽기, 쓰기, 디스어셈블 |
+| `veh_kd_breakpoint` | `action, address` | 커널 실행 브레이크포인트. 하이퍼바이저 스텁은 코드를 바꾸지 않는 숨은 방식으로 건다 |
+| `veh_kd_monitor` / `veh_kd_disconnect` | `command` | 스텁 전용 명령 (gdb `monitor`), 연결 해제 시 브레이크포인트 제거 후 재개 |
+
 > **Non-stop 조회 (타겟 정지 불필요)**: `veh_read_memory` / `veh_read_pointer_chain` / `veh_write_memory` / `veh_dump_memory` / `veh_disassemble` / `veh_modules` / `veh_memory_map` / `veh_protect_memory` / `veh_search_memory` / `veh_value_scan` / `veh_symbolize` / `veh_display_type` 는 타겟이 **실행 중에도** 동작합니다 (DLL 내 전용 파이프 스레드가 처리 -- 다른 스레드를 멈추지 않음). GUI를 조작하면서 라이브 값을 읽을 때 BP를 걸거나 detach/attach를 왕복할 필요가 없습니다. 반대로 `veh_registers` / `veh_stack_trace` / `veh_enum_locals` / `veh_step_*` 는 스레드 컨텍스트가 필요하므로 BP 히트나 `veh_pause`로 정지된 상태에서만 동작합니다.
 
 > **Tip**: 주소 인자는 hex (`"0x401000"`), 10진수 (`4198400`), **모듈+RVA** (`"crackme.exe+0x1000"`) 모두 허용합니다. 모듈+RVA는 ASLR 계산 없이 사용 가능합니다.

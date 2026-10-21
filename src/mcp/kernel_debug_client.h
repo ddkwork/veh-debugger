@@ -1,0 +1,52 @@
+#pragma once
+// Client for a halting kernel debugger that speaks the GDB remote serial
+// protocol (RSP): a hypervisor stub, a VM's gdbstub, or anything gdb could
+// attach to. Transports: a named pipe (e.g. a VM's COM port mapped to a host
+// pipe), a serial port, or TCP.
+#include <cstdint>
+#include <memory>
+#include <string>
+#include <vector>
+
+namespace veh {
+
+class KdTransport {
+public:
+	virtual ~KdTransport() = default;
+	virtual bool Write(const void* data, size_t size) = 0;
+	// Bytes received within timeout_ms (0 = only what is already there); -1 on a broken link.
+	virtual int Read(uint8_t* buffer, size_t max, uint32_t timeout_ms) = 0;
+};
+
+// "pipe" (\\.\pipe\name), "com" (COM1, baud), "tcp" (host:port).
+std::unique_ptr<KdTransport> OpenKdTransport(const std::string& kind, const std::string& address, uint32_t baud,
+	std::string* error);
+
+class KernelDebugClient {
+public:
+	explicit KernelDebugClient(std::unique_ptr<KdTransport> transport) : transport_(std::move(transport)) {}
+
+	// qSupported, no-ack mode, initial stop reason; halts the target if it was running.
+	bool Handshake(std::string* stop, std::string* error);
+	// One request, one reply (empty reply = unsupported); false on timeout or a broken link.
+	bool Request(const std::string& packet, std::string* reply, uint32_t timeout_ms = 5000);
+	// Resume (c / vCont;s:N): no reply until the target stops again.
+	bool Resume(const std::string& packet);
+	// Stop reply after Resume; false on timeout (the target keeps running).
+	bool WaitStop(std::string* stop, uint32_t timeout_ms);
+	bool Interrupt(std::string* stop, uint32_t timeout_ms); // 0x03
+	bool running() const { return running_; }
+	const std::string& last_stop() const { return last_stop_; }
+
+private:
+	bool Send(const std::string& payload);
+	bool Receive(std::string* payload, uint32_t timeout_ms);
+
+	std::unique_ptr<KdTransport> transport_;
+	std::string buffer_;
+	bool ack_ = true;
+	bool running_ = false;
+	std::string last_stop_;
+};
+
+} // namespace veh

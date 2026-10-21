@@ -574,4 +574,149 @@ json McpServer::ToolAddressSpace(const json& args) {
 	return out;
 }
 
+namespace {
+
+const char* const kEventNames[] = { "", "cpuid", "msr_read", "msr_write", "exception", "port_in", "port_out", "syscall",
+	"hypercall", "xsetbv", "rdtsc", "memory_read", "memory_write", "memory_execute" };
+
+uint32_t EventTypeOf(const std::string& name) {
+	for (uint32_t i = 1; i < sizeof(kEventNames) / sizeof(kEventNames[0]); ++i)
+		if (name == kEventNames[i]) return i;
+	return 0;
+}
+
+std::string EventName(uint32_t type) {
+	return type < sizeof(kEventNames) / sizeof(kEventNames[0]) ? kEventNames[type] : std::to_string(type);
+}
+
+json PrivilegeJson(uint32_t privilege) {
+	return privilege == 1 ? "kernel" : privilege == 2 ? "user" : "any";
+}
+
+} // namespace
+
+json McpServer::ToolEvent(const json& args) {
+	const std::string op = args.value("operation", "list");
+	json error;
+	std::vector<uint8_t> resp;
+	if (op == "add") {
+		AddSystemEventRequest req{};
+		req.type = EventTypeOf(args.value("type", ""));
+		if (!req.type) return {{"error", "type: cpuid, msr_read, msr_write, exception, port_in, port_out, syscall, hypercall, xsetbv, rdtsc, memory_read, memory_write, memory_execute"}};
+		req.action = args.value("action", "record") == "stop" ? 1u : 0u;
+		req.pid = JsonUint32(args, "pid", 0);
+		req.tid = JsonUint32(args, "tid", 0);
+		req.cpu = args.contains("cpu") ? JsonUint32(args, "cpu", 0) : ~0u;
+		const std::string mode = args.value("mode", "any");
+		req.privilege = mode == "kernel" ? 1u : mode == "user" ? 2u : 0u;
+		uint64_t low = 0, high = ~0ull;
+		if (ParseNumber(args, "value", low)) high = low;
+		ParseNumber(args, "low", low);
+		ParseNumber(args, "high", high);
+		uint64_t size = 0;
+		if (ParseNumber(args, "address", low)) {
+			high = low + (ParseNumber(args, "size", size) && size ? size - 1 : 0);
+		}
+		req.low = low;
+		req.high = high;
+		if (!SystemExchange(IpcCommand::AddSystemEvent, &req, sizeof(req), resp, error)) return error;
+		if (resp.size() < sizeof(AddSystemEventResponse)) return {{"error", "short response"}};
+		const auto* r = reinterpret_cast<const AddSystemEventResponse*>(resp.data());
+		if (r->status != IpcStatus::Ok) return {{"error", std::string("not added: ") + StatusText(r->status)}};
+		return {{"id", r->id}, {"type", EventName(req.type)}, {"action", req.action ? "stop" : "record"},
+			{"note", "records: veh_event_records"}};
+	}
+	if (op == "remove") {
+		RemoveSystemEventRequest req{args.contains("id") ? JsonUint32(args, "id", 0) : ~0u};
+		if (!SystemExchange(IpcCommand::RemoveSystemEvent, &req, sizeof(req), resp, error)) return error;
+		const IpcStatus status = *reinterpret_cast<const IpcStatus*>(resp.data());
+		if (status != IpcStatus::Ok) return {{"error", StatusText(status)}};
+		return {{"removed", args.contains("id") ? json(req.id) : json("all")}};
+	}
+	if (op != "list") return {{"error", "operation: add, remove, list"}};
+	if (!SystemExchange(IpcCommand::ListSystemEvents, nullptr, 0, resp, error)) return error;
+	if (resp.size() < sizeof(ListSystemEventsResponse)) return {{"error", "short response"}};
+	const auto* head = reinterpret_cast<const ListSystemEventsResponse*>(resp.data());
+	json list = json::array();
+	const auto* e = reinterpret_cast<const SystemEventInfo*>(head + 1);
+	for (uint32_t i = 0; i < head->count && sizeof(*head) + (i + 1) * sizeof(*e) <= resp.size(); ++i)
+		list.push_back({{"id", e[i].id}, {"type", EventName(e[i].type)},
+			{"action", e[i].action == 2 ? "edit" : e[i].action ? "stop" : "record"},
+			{"pid", e[i].pid}, {"tid", e[i].tid}, {"cpu", e[i].cpu == ~0u ? json("any") : json(e[i].cpu)},
+			{"mode", PrivilegeJson(e[i].privilege)}, {"low", HexAddr(e[i].low)}, {"high", HexAddr(e[i].high)},
+			{"hits", e[i].hits}});
+	return {{"events", list}};
+}
+
+json McpServer::ToolHiddenHook(const json& args) {
+	static const char* const kRegs[] = { "rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp", "r8", "r9", "r10",
+		"r11", "r12", "r13", "r14", "r15", "rip", "rflags" };
+	const std::string op = args.value("operation", "list");
+	if (op == "remove")
+		return ToolEvent({{"operation", "remove"}, {"id", JsonUint32(args, "id", 0)}});
+	if (op == "list") {
+		json all = ToolEvent({{"operation", "list"}});
+		if (!all.contains("events")) return all;
+		json hooks = json::array();
+		for (auto& e : all["events"])
+			if (e.value("type", "") == "memory_execute" && e.value("action", "") != "record" && e.value("action", "") != "stop")
+				hooks.push_back(e);
+		return {{"hooks", hooks}};
+	}
+	if (op != "add") return {{"error", "operation: add, remove, list"}};
+	AddHiddenHookRequest req{};
+	if (!ParseNumber(args, "address", req.address)) return {{"error", "address is required"}};
+	req.pid = JsonUint32(args, "pid", 0);
+	if (args.contains("set")) {
+		for (auto& [name, value] : args["set"].items()) {
+			int n = -1;
+			for (int i = 0; i < 18; ++i)
+				if (name == kRegs[i]) n = i;
+			uint64_t v = 0;
+			const json one = {{"v", value}};
+			if (n < 0 || !ParseNumber(one, "v", v)) return {{"error", "set: unknown register or value: " + name}};
+			req.regMask |= 1u << n;
+			req.values[n] = v;
+		}
+	}
+	if (args.contains("return")) {
+		req.returnNow = 1;
+		if (!ParseNumber(args, "return", req.returnValue)) return {{"error", "return: a value"}};
+		req.returnPop = JsonUint32(args, "pop", 0);
+	}
+	if (!req.regMask && !req.returnNow) return {{"error", "nothing to do: give set and/or return"}};
+	json error;
+	std::vector<uint8_t> resp;
+	if (!SystemExchange(IpcCommand::AddHiddenHook, &req, sizeof(req), resp, error)) return error;
+	if (resp.size() < sizeof(AddHiddenHookResponse)) return {{"error", "short response"}};
+	const auto* r = reinterpret_cast<const AddHiddenHookResponse*>(resp.data());
+	if (r->status != IpcStatus::Ok) return {{"error", std::string("not added: ") + StatusText(r->status)}};
+	return {{"id", r->id}, {"address", HexAddr(req.address)}, {"pid", req.pid},
+		{"note", "every hit is also a veh_event_records entry (type memory_execute)"}};
+}
+
+json McpServer::ToolEventRecords(const json& args) {
+	DrainSystemEventsRequest req{JsonUint32(args, "max", 256)};
+	json error;
+	std::vector<uint8_t> resp;
+	if (!SystemExchange(IpcCommand::DrainSystemEvents, &req, sizeof(req), resp, error)) return error;
+	if (resp.size() < sizeof(DrainSystemEventsResponse)) return {{"error", "short response"}};
+	const auto* head = reinterpret_cast<const DrainSystemEventsResponse*>(resp.data());
+	if (head->status != IpcStatus::Ok) return {{"error", StatusText(head->status)}};
+	const auto* r = reinterpret_cast<const SystemEventRecord*>(head + 1);
+	json list = json::array();
+	for (uint32_t i = 0; i < head->count && sizeof(*head) + (i + 1) * sizeof(*r) <= resp.size(); ++i) {
+		json j = {{"id", r[i].id}, {"type", EventName(r[i].type)}, {"cpu", r[i].cpu}, {"pid", r[i].pid},
+			{"tid", r[i].tid}, {"mode", r[i].privilege == 3 ? "user" : "kernel"}, {"value", HexAddr(r[i].value)},
+			{"detail", HexAddr(r[i].detail)}, {"rip", HexAddr(r[i].rip)}, {"rsp", HexAddr(r[i].rsp)},
+			{"cr3", HexAddr(r[i].pageTable)}, {"timestamp", r[i].timestamp}};
+		if (JsonBool(args, "registers", false))
+			j["registers"] = {{"rax", HexAddr(r[i].rax)}, {"rbx", HexAddr(r[i].rbx)}, {"rcx", HexAddr(r[i].rcx)},
+				{"rdx", HexAddr(r[i].rdx)}, {"r8", HexAddr(r[i].r8)}, {"r9", HexAddr(r[i].r9)},
+				{"r10", HexAddr(r[i].r10)}, {"r11", HexAddr(r[i].r11)}};
+		list.push_back(j);
+	}
+	return {{"records", list}, {"count", head->count}, {"dropped", head->dropped}};
+}
+
 } // namespace veh

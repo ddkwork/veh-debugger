@@ -8,8 +8,11 @@
 #include <queue>
 #include <thread>
 #include <unordered_map>
+#include <memory>
+#include <set>
 #include "adapter/transport.h"
 #include "debug_session.h"
+#include "kernel_debug_client.h"
 #include "common/ipc_protocol.h"
 #include <nlohmann/json.hpp>
 
@@ -111,9 +114,26 @@ private:
 	json ToolKernelModules(const json& args);
 	json ToolAddressSpace(const json& args);
 	json ToolTransparency(const json& args);
+	json ToolEvent(const json& args);
+	json ToolEventRecords(const json& args);
+	json ToolHiddenHook(const json& args);
 	bool SystemExchange(IpcCommand cmd, const void* payload, uint32_t size, std::vector<uint8_t>& response, json& error);
 	std::vector<SystemModuleEntry> SystemModules(json& error);
 	static json KernelLocation(uint64_t address, const std::vector<SystemModuleEntry>& modules);
+	// Halting kernel debugging over the GDB remote protocol (tools_kernel_debug.cpp)
+	json ToolKdConnect(const json& args);
+	json ToolKdDisconnect(const json& args);
+	json ToolKdContinue(const json& args);
+	json ToolKdWait(const json& args);
+	json ToolKdBreak(const json& args);
+	json ToolKdStep(const json& args);
+	json ToolKdRegisters(const json& args);
+	json ToolKdSetRegister(const json& args);
+	json ToolKdMemory(const json& args);
+	json ToolKdBreakpoint(const json& args);
+	json ToolKdMonitor(const json& args);
+	json KdNotConnected() const;
+	bool KdSelect(const json& args, json& error);
 
 	// Tool list definition
 	// One entry per MCP tool: handler, discovery metadata, and the MCP definition
@@ -158,6 +178,8 @@ private:
 
 	dap::Transport* transport_ = nullptr;
 	DebugSession session_;
+	std::unique_ptr<KernelDebugClient> kd_;
+	std::set<uint64_t> kd_breakpoints_;
 	std::string toolProfile_;
 	const std::vector<ToolDef> tools_ = BuildAllToolsList();
 	std::atomic<bool> running_{false};

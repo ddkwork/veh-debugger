@@ -1491,6 +1491,110 @@ std::vector<McpServer::ToolDef> McpServer::BuildAllToolsList() {
 				{"filter", {{"type", "string"}, {"description", "Case-insensitive substring of the path"}}}
 			 }}}}}),
 
+		Tool(&McpServer::ToolEvent, "system", 0, true,
+			{{"name", "veh_event"}, {"description", "Machine-wide events (like HyperDbg !cpuid/!msrread/!msrwrite/!exception/!ioin/!ioout/!syscall/!vmcall/!xsetbv/!tsc/!monitor): add, remove, list. Every match is recorded with registers (veh_event_records); action=stop also halts the machine for a connected kernel debugger (veh_kd_*). The guest sees nothing. Needs a hypervisor backend."},
+			 {"inputSchema", {{"type", "object"}, {"properties", {
+				{"operation", {{"type", "string"}, {"enum", json::array({"add", "remove", "list"})}, {"description", "Default: list"}}},
+				{"type", {{"type", "string"}, {"enum", json::array({"cpuid", "msr_read", "msr_write", "exception", "port_in", "port_out", "syscall", "hypercall", "xsetbv", "rdtsc", "memory_read", "memory_write", "memory_execute"})}}},
+				{"value", {{"type", "string"}, {"description", "Exact value: CPUID leaf, MSR index, exception vector, port, system call number"}}},
+				{"low", {{"type", "string"}, {"description", "Value range start (inclusive)"}}},
+				{"high", {{"type", "string"}, {"description", "Value range end (inclusive)"}}},
+				{"address", {{"type", "string"}, {"description", "memory_*: start address (with pid: that process; without: kernel)"}}},
+				{"size", {{"type", "integer"}, {"description", "memory_*: bytes (within one page)"}}},
+				{"pid", {{"type", "integer"}, {"description", "Only this process (default any)"}}},
+				{"tid", {{"type", "integer"}}},
+				{"cpu", {{"type", "integer"}}},
+				{"mode", {{"type", "string"}, {"enum", json::array({"any", "kernel", "user"})}}},
+				{"action", {{"type", "string"}, {"enum", json::array({"record", "stop"})}, {"description", "Default: record"}}},
+				{"id", {{"type", "integer"}, {"description", "remove: this event (omit: all)"}}}
+			 }}}}}),
+		Tool(&McpServer::ToolEventRecords, "system", 0, true,
+			{{"name", "veh_event_records"}, {"description", "Take the records of veh_event matches (oldest first): event id, type, cpu, process/thread, kernel or user mode, value/detail, rip/rsp/cr3, timestamp; registers=true adds rax..r11."},
+			 {"inputSchema", {{"type", "object"}, {"properties", {
+				{"max", {{"type", "integer"}, {"description", "Default 256"}}},
+				{"registers", {{"type", "boolean"}}}
+			 }}}}}),
+
+		Tool(&McpServer::ToolHiddenHook, "system", 0, true,
+			{{"name", "veh_hidden_hook"}, {"description", "Hidden execution hook (like HyperDbg !epthook2): when address executes, in process pid or in the kernel (pid 0), set registers and/or return from the function at once with a value. The code is never written; the thread does not stop. Needs a hypervisor backend."},
+			 {"inputSchema", {{"type", "object"}, {"properties", {
+				{"operation", {{"type", "string"}, {"enum", json::array({"add", "remove", "list"})}, {"description", "Default: list"}}},
+				{"address", {{"type", "string"}, {"description", "Hooked instruction (usually a function start)"}}},
+				{"pid", {{"type", "integer"}, {"description", "Process (default 0: kernel address)"}}},
+				{"set", {{"type", "object"}, {"description", "Registers to set, e.g. {\"rcx\": \"0x10\"}"}}},
+				{"return", {{"type", "string"}, {"description", "Return at once with this value (rax)"}}},
+				{"pop", {{"type", "integer"}, {"description", "Extra stack bytes the return removes (stdcall)"}}},
+				{"id", {{"type", "integer"}, {"description", "remove: the hook id"}}}
+			 }}}}}),
+
+		// Halting kernel debugging (GDB remote serial protocol); independent of the attached process.
+		Tool(&McpServer::ToolKdConnect, "kernel", 0, false,
+			{{"name", "veh_kd_connect"}, {"description", "Connect to a halting kernel debugger stub that speaks the GDB remote serial protocol (a hypervisor stub, a VM's gdbstub). Connecting halts every CPU of the target machine. Transports: pipe (e.g. a VM's COM port mapped to a host named pipe), com (serial port), tcp."},
+			 {"inputSchema", {{"type", "object"}, {"properties", {
+				{"transport", {{"type", "string"}, {"enum", json::array({"pipe", "com", "tcp"})}, {"description", "Default: pipe"}}},
+				{"address", {{"type", "string"}, {"description", "\\\\.\\pipe\\name, COM1, or host:port"}}},
+				{"baud", {{"type", "integer"}, {"description", "com: default 115200"}}}
+			 }}, {"required", json::array({"address"})}}}}),
+		Tool(&McpServer::ToolKdDisconnect, "kernel", 0, false,
+			{{"name", "veh_kd_disconnect"}, {"description", "Remove kernel breakpoints, resume every CPU and detach."},
+			 {"inputSchema", {{"type", "object"}, {"properties", json::object()}}}}),
+		Tool(&McpServer::ToolKdContinue, "kernel", 0, false,
+			{{"name", "veh_kd_continue"}, {"description", "Resume the halted machine. wait=true blocks until it stops again (breakpoint) or timeout_ms."},
+			 {"inputSchema", {{"type", "object"}, {"properties", {
+				{"wait", {{"type", "boolean"}}},
+				{"timeout_ms", {{"type", "integer"}, {"description", "Default 10000"}}}
+			 }}}}}),
+		Tool(&McpServer::ToolKdWait, "kernel", 0, false,
+			{{"name", "veh_kd_wait"}, {"description", "Wait for the running machine to stop (breakpoint hit)."},
+			 {"inputSchema", {{"type", "object"}, {"properties", {
+				{"timeout_ms", {{"type", "integer"}, {"description", "Default 10000"}}}
+			 }}}}}),
+		Tool(&McpServer::ToolKdBreak, "kernel", 0, false,
+			{{"name", "veh_kd_break"}, {"description", "Halt the running machine (break-in)."},
+			 {"inputSchema", {{"type", "object"}, {"properties", {
+				{"timeout_ms", {{"type", "integer"}, {"description", "Default 10000"}}}
+			 }}}}}),
+		Tool(&McpServer::ToolKdStep, "kernel", 0, false,
+			{{"name", "veh_kd_step"}, {"description", "Single-step one CPU (default: the one that stopped) while the others stay halted; returns the new rip and the next instruction."},
+			 {"inputSchema", {{"type", "object"}, {"properties", {
+				{"cpu", {{"type", "integer"}}},
+				{"count", {{"type", "integer"}, {"description", "Default 1"}}},
+				{"timeout_ms", {{"type", "integer"}}}
+			 }}}}}),
+		Tool(&McpServer::ToolKdRegisters, "kernel", 0, false,
+			{{"name", "veh_kd_registers"}, {"description", "General registers of a halted CPU, plus cr3, gs/fs base, IDT and CPL when the stub reports them."},
+			 {"inputSchema", {{"type", "object"}, {"properties", {
+				{"cpu", {{"type", "integer"}, {"description", "Default: the current one"}}}
+			 }}}}}),
+		Tool(&McpServer::ToolKdSetRegister, "kernel", 0, false,
+			{{"name", "veh_kd_set_register"}, {"description", "Write a general register (rax..r15, rip, rflags) of a halted CPU."},
+			 {"inputSchema", {{"type", "object"}, {"properties", {
+				{"cpu", {{"type", "integer"}}},
+				{"name", {{"type", "string"}}},
+				{"value", {{"type", "string"}, {"description", "Hex"}}}
+			 }}, {"required", json::array({"name", "value"})}}}}),
+		Tool(&McpServer::ToolKdMemory, "kernel", 0, false,
+			{{"name", "veh_kd_memory"}, {"description", "Read, write or disassemble virtual memory through a halted CPU's page tables (kernel or the user process it was running)."},
+			 {"inputSchema", {{"type", "object"}, {"properties", {
+				{"operation", {{"type", "string"}, {"enum", json::array({"read", "write", "disassemble"})}, {"description", "Default: read"}}},
+				{"address", {{"type", "string"}, {"description", "Hex"}}},
+				{"size", {{"type", "integer"}, {"description", "read: bytes (default 64, max 64 KiB)"}}},
+				{"count", {{"type", "integer"}, {"description", "disassemble: instructions (default 16)"}}},
+				{"data", {{"type", "string"}, {"description", "write: hex bytes"}}},
+				{"cpu", {{"type", "integer"}}}
+			 }}, {"required", json::array({"address"})}}}}),
+		Tool(&McpServer::ToolKdBreakpoint, "kernel", 0, false,
+			{{"name", "veh_kd_breakpoint"}, {"description", "Kernel execution breakpoints: add, remove, list. The stub decides how (a hypervisor stub hides them: code bytes stay unchanged)."},
+			 {"inputSchema", {{"type", "object"}, {"properties", {
+				{"action", {{"type", "string"}, {"enum", json::array({"add", "remove", "list"})}, {"description", "Default: list"}}},
+				{"address", {{"type", "string"}, {"description", "Hex"}}}
+			 }}}}}),
+		Tool(&McpServer::ToolKdMonitor, "kernel", 0, false,
+			{{"name", "veh_kd_monitor"}, {"description", "A stub-specific monitor command (gdb 'monitor'), e.g. help, regs, cpus."},
+			 {"inputSchema", {{"type", "object"}, {"properties", {
+				{"command", {{"type", "string"}}}
+			 }}}}}),
+
 		Tool(&McpServer::ToolTransparency, "system", 0, true,
 			{{"name", "veh_transparency"}, {"description", "Timing transparency against anti-debug timing checks: with timing=on the target's RDTSC/RDTSCP (and clocks built on them) exclude the time the debugger holds it (stops, steps, hypervisor round trips); its clock stays monotonic. measure=true times CPUID as a process sees it without and with the compensation. Needs a hypervisor backend."},
 			 {"inputSchema", {{"type", "object"}, {"properties", {

@@ -116,6 +116,15 @@ enum class IpcCommand : uint32_t {
 	ResolveAddressSpace    = 0x008E,  // the target's page-table root (CR3) by several methods
 	ConfigureTransparency  = 0x008F,  // hide the debugger's time from the target's clock
 
+	// System events: machine-wide occurrences (CPUID, MSR access, exceptions, port
+	// I/O, system calls, memory accesses...) matched by filters and recorded, or
+	// halting the machine for a kernel debugger. Backends below the OS only.
+	AddSystemEvent         = 0x0090,
+	RemoveSystemEvent      = 0x0091,
+	ListSystemEvents       = 0x0092,
+	DrainSystemEvents      = 0x0093,
+	AddHiddenHook          = 0x0094,  // execution hook that edits registers / returns at once; code untouched
+
 	// Lifecycle
 	GetCapabilities        = 0x00FC,  // backend identity and per-command support (older peers answer InvalidArgs)
 	Heartbeat              = 0x00FE,
@@ -1551,6 +1560,95 @@ struct ConfigureTransparencyResponse {
 	uint64_t  exitCost;         // estimated cycles one hypervisor round trip adds
 	uint64_t  cpuidCycles;      // measure: CPUID as seen without compensation
 	uint64_t  cpuidCyclesHidden; // measure: ... with it
+};
+
+enum class SystemEventType : uint32_t {
+	Cpuid = 1,        // value: leaf
+	MsrRead = 2,      // value: MSR index
+	MsrWrite = 3,     // value: MSR index, detail: value written
+	Exception = 4,    // value: vector, detail: error code
+	PortIn = 5,       // value: port, detail: size
+	PortOut = 6,      // value: port, detail: size
+	Syscall = 7,      // value: system call number, detail: first argument
+	Hypercall = 8,    // value: rax
+	Xsetbv = 9,       // value: XCR index, detail: value
+	Rdtsc = 10,
+	MemoryRead = 11,  // value: address, detail: physical address
+	MemoryWrite = 12,
+	MemoryExecute = 13,
+};
+struct AddSystemEventRequest {
+	uint32_t type;      // SystemEventType
+	uint32_t action;    // 0 record, 1 stop (halt the machine for a connected kernel debugger)
+	uint32_t pid;       // 0 = any process
+	uint32_t tid;       // 0 = any thread
+	uint32_t cpu;       // ~0u = any processor
+	uint32_t privilege; // bit 0 kernel mode, bit 1 user mode; 0 = both
+	uint64_t low;       // value range, inclusive (memory events: addresses, in pid's space or the kernel's)
+	uint64_t high;
+};
+struct AddSystemEventResponse {
+	IpcStatus status;
+	uint32_t  id;
+};
+struct RemoveSystemEventRequest {
+	uint32_t id;        // ~0u = every event
+};
+struct SystemEventInfo {
+	uint32_t id;
+	uint32_t type;
+	uint32_t action;
+	uint32_t pid;
+	uint32_t tid;
+	uint32_t cpu;
+	uint32_t privilege;
+	uint32_t hits;
+	uint64_t low;
+	uint64_t high;
+};
+struct ListSystemEventsResponse {
+	IpcStatus status;
+	uint32_t  count;    // SystemEventInfo[count] follow
+};
+struct DrainSystemEventsRequest {
+	uint32_t max;       // records wanted (0 = as many as fit)
+};
+struct SystemEventRecord {
+	uint32_t id;
+	uint32_t type;
+	uint32_t cpu;
+	uint32_t pid;
+	uint32_t tid;
+	uint32_t privilege; // 0 kernel, 3 user
+	uint64_t value;
+	uint64_t detail;
+	uint64_t rip, rsp, pageTable;
+	uint64_t rax, rbx, rcx, rdx, r8, r9, r10, r11;
+	uint64_t timestamp; // TSC
+};
+struct DrainSystemEventsResponse {
+	IpcStatus status;
+	uint32_t  count;    // SystemEventRecord[count] follow
+	uint32_t  dropped;  // records lost to a full buffer since the last drain
+};
+
+// A hidden execution hook: when address executes (in process pid, 0 = kernel)
+// the registers in regMask take values[], and with returnNow the function
+// returns at once to its caller with returnValue (popping returnPop extra stack
+// bytes, for stdcall). The code is never modified. Listed and removed as system
+// events (type MemoryExecute, action 2).
+struct AddHiddenHookRequest {
+	uint64_t address;
+	uint32_t pid;
+	uint32_t returnNow;
+	uint32_t returnPop;
+	uint32_t regMask;     // bit n: register n of rax rbx rcx rdx rsi rdi rbp rsp r8..r15 rip rflags
+	uint64_t returnValue;
+	uint64_t values[18];
+};
+struct AddHiddenHookResponse {
+	IpcStatus status;
+	uint32_t  id;
 };
 
 struct ResolveAddressSpaceResponse {
