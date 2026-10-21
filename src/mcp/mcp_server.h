@@ -99,6 +99,19 @@ private:
 	json ToolCheckpointDiff(const json& args);
 	json ToolCheckpointDelete(const json& args);
 	json ToolToolbox(const json& args);
+	// System inspection (tools_system.cpp)
+	json ToolSystemMemory(const json& args);
+	json ToolTranslate(const json& args);
+	json ToolMsr(const json& args);
+	json ToolCpuid(const json& args);
+	json ToolPortIo(const json& args);
+	json ToolIdt(const json& args);
+	json ToolApic(const json& args);
+	json ToolPci(const json& args);
+	json ToolKernelModules(const json& args);
+	bool SystemExchange(IpcCommand cmd, const void* payload, uint32_t size, std::vector<uint8_t>& response, json& error);
+	std::vector<SystemModuleEntry> SystemModules(json& error);
+	static json KernelLocation(uint64_t address, const std::vector<SystemModuleEntry>& modules);
 
 	// Tool list definition
 	// One entry per MCP tool: handler, discovery metadata, and the MCP definition

@@ -1415,6 +1415,82 @@ std::vector<McpServer::ToolDef> McpServer::BuildAllToolsList() {
 				{"method", {{"type", "string"}, {"enum", json::array({"api", "nt", "syscall"})}, {"description", "Protection mechanism (default: api)"}}}
 			 }}, {"required", json::array({"address", "size", "protection"})}}}}),
 
+		// System inspection: needs a backend running below the OS; other backends report it unavailable.
+		Tool(&McpServer::ToolSystemMemory, "system", 0, true,
+			{{"name", "veh_system_memory"}, {"description", "Kernel virtual or physical memory: read, write (kernel writes go through physical memory and ignore page protection), search (hex pattern with ?? wildcards), or dump a range to a file. Needs a hypervisor backend."},
+			 {"inputSchema", {{"type", "object"}, {"properties", {
+				{"operation", {{"type", "string"}, {"enum", json::array({"read", "write", "search", "dump"})}, {"description", "Default: read"}}},
+				{"space", {{"type", "string"}, {"enum", json::array({"kernel", "physical"})}, {"description", "Address space (default: kernel)"}}},
+				{"address", {{"type", "string"}, {"description", "Start address (hex)"}}},
+				{"size", {{"type", "integer"}, {"description", "Bytes: read (default 64, max 1 MiB), search range (default 1 MiB), dump length"}}},
+				{"data", {{"type", "string"}, {"description", "write: hex bytes"}}},
+				{"pattern", {{"type", "string"}, {"description", "search: e.g. \"48 8B ?? 05\""}}},
+				{"max_results", {{"type", "integer"}, {"description", "search: default 100"}}},
+				{"path", {{"type", "string"}, {"description", "dump: output file (unreadable ranges are zero filled)"}}}
+			 }}, {"required", json::array({"address"})}}}}),
+
+		Tool(&McpServer::ToolTranslate, "system", 0, true,
+			{{"name", "veh_translate"}, {"description", "Virtual to physical with every paging entry decoded (like !va2pa/!pte), or physical to kernel virtual (!pa2va). Needs a hypervisor backend."},
+			 {"inputSchema", {{"type", "object"}, {"properties", {
+				{"address", {{"type", "string"}, {"description", "Virtual address to translate"}}},
+				{"space", {{"type", "string"}, {"enum", json::array({"auto", "target", "kernel"})}, {"description", "Page tables: the target's or the kernel's (auto: target below the user limit)"}}},
+				{"physical", {{"type", "string"}, {"description", "Physical address to map back to a kernel virtual address"}}}
+			 }}}}}),
+
+		Tool(&McpServer::ToolMsr, "system", 0, true,
+			{{"name", "veh_msr"}, {"description", "Read or write a model-specific register on one processor or all. A #GP (no such MSR) is reported per processor. Needs a hypervisor backend."},
+			 {"inputSchema", {{"type", "object"}, {"properties", {
+				{"index", {{"type", "string"}, {"description", "MSR index, e.g. \"0xC0000082\" (LSTAR)"}}},
+				{"value", {{"type", "string"}, {"description", "Write this value (omit to read)"}}},
+				{"cpu", {{"type", "string"}, {"description", "Processor index or \"all\" (default 0)"}}}
+			 }}, {"required", json::array({"index"})}}}}),
+
+		Tool(&McpServer::ToolCpuid, "system", 0, true,
+			{{"name", "veh_cpuid"}, {"description", "Execute CPUID on a processor; without leaf, a summary (vendor, brand, family/model, VMX/SVM/hypervisor and other features). Needs a hypervisor backend."},
+			 {"inputSchema", {{"type", "object"}, {"properties", {
+				{"leaf", {{"type", "string"}, {"description", "EAX input"}}},
+				{"subleaf", {{"type", "string"}, {"description", "ECX input (default 0)"}}},
+				{"cpu", {{"type", "integer"}, {"description", "Processor index (default 0)"}}}
+			 }}}}}),
+
+		Tool(&McpServer::ToolPortIo, "system", 0, true,
+			{{"name", "veh_port_io"}, {"description", "I/O port IN (read) or OUT (with value). Writes reach hardware directly. Needs a hypervisor backend."},
+			 {"inputSchema", {{"type", "object"}, {"properties", {
+				{"port", {{"type", "string"}, {"description", "Port 0-0xFFFF"}}},
+				{"size", {{"type", "integer"}, {"enum", json::array({1, 2, 4})}, {"description", "Access width (default 1)"}}},
+				{"value", {{"type", "string"}, {"description", "Write this value (omit to read)"}}}
+			 }}, {"required", json::array({"port"})}}}}),
+
+		Tool(&McpServer::ToolIdt, "system", 0, true,
+			{{"name", "veh_idt"}, {"description", "Interrupt descriptor table of a processor with each handler as kernel module+offset. Needs a hypervisor backend."},
+			 {"inputSchema", {{"type", "object"}, {"properties", {
+				{"cpu", {{"type", "integer"}, {"description", "Processor index (default 0)"}}},
+				{"include_absent", {{"type", "boolean"}, {"description", "List non-present gates too"}}}
+			 }}}}}),
+
+		Tool(&McpServer::ToolApic, "system", 0, true,
+			{{"name", "veh_apic"}, {"description", "Local APIC registers of a processor (xAPIC or x2APIC) or, with kind=io, the first I/O APIC's redirection table decoded. Needs a hypervisor backend."},
+			 {"inputSchema", {{"type", "object"}, {"properties", {
+				{"kind", {{"type", "string"}, {"enum", json::array({"local", "io"})}, {"description", "Default: local"}}},
+				{"cpu", {{"type", "integer"}, {"description", "local: processor index (default 0)"}}}
+			 }}}}}),
+
+		Tool(&McpServer::ToolPci, "system", 0, true,
+			{{"name", "veh_pci"}, {"description", "PCI: enumerate devices (tree, following bridges), or read/write a function's 256-byte configuration space. Needs a hypervisor backend."},
+			 {"inputSchema", {{"type", "object"}, {"properties", {
+				{"operation", {{"type", "string"}, {"enum", json::array({"tree", "read", "write"})}, {"description", "Default: tree"}}},
+				{"bus", {{"type", "integer"}}}, {"device", {{"type", "integer"}}}, {"function", {{"type", "integer"}}},
+				{"offset", {{"type", "integer"}, {"description", "Byte offset (default 0)"}}},
+				{"size", {{"type", "integer"}, {"description", "read: bytes (default: rest of the 256)"}}},
+				{"data", {{"type", "string"}, {"description", "write: hex bytes"}}}
+			 }}}}}),
+
+		Tool(&McpServer::ToolKernelModules, "system", 0, true,
+			{{"name", "veh_kernel_modules"}, {"description", "Loaded kernel modules (base, size, path). Needs a hypervisor backend."},
+			 {"inputSchema", {{"type", "object"}, {"properties", {
+				{"filter", {{"type", "string"}, {"description", "Case-insensitive substring of the path"}}}
+			 }}}}}),
+
 		Tool(&McpServer::ToolMemoryMap, "memory", 0, true,
 			{{"name", "veh_memory_map"}, {"description", "List virtual memory regions (VirtualQuery) with state, protection (r/rw/rx/rwx, +guard), type (image/private/mapped) and owning module. Limited by max_regions; when truncated, pass next_start as start to continue."},
 		 {"inputSchema", {{"type", "object"}, {"properties", {

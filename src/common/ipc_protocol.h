@@ -97,6 +97,23 @@ enum class IpcCommand : uint32_t {
 	TraceCalls             = 0x0073,
 	TraceBasicBlocks       = 0x0074,
 
+	// System inspection: machine-wide state outside the target process. Only
+	// backends running below the OS serve these; others answer Unsupported.
+	ReadPhysical           = 0x0080,
+	WritePhysical          = 0x0081,
+	TranslateAddress       = 0x0082,  // virtual -> physical with every paging entry
+	PhysicalToVirtual      = 0x0083,  // physical -> kernel virtual
+	ReadSystemMemory       = 0x0084,  // kernel virtual memory
+	WriteSystemMemory      = 0x0085,  // kernel virtual memory (through physical: ignores page protection)
+	AccessMsr              = 0x0086,
+	ExecuteCpuid           = 0x0087,
+	AccessPort             = 0x0088,  // I/O port IN/OUT
+	QueryIdt               = 0x0089,
+	QueryApic              = 0x008A,
+	QueryIoApic            = 0x008B,
+	AccessPciConfig        = 0x008C,
+	GetSystemModules       = 0x008D,  // kernel modules
+
 	// Lifecycle
 	GetCapabilities        = 0x00FC,  // backend identity and per-command support (older peers answer InvalidArgs)
 	Heartbeat              = 0x00FE,
@@ -1355,6 +1372,147 @@ struct TraceCallersResponse {
 	uint32_t totalHits;        // total BP hits
 	uint32_t uniqueCallers;    // number of TraceCallerEntry following
 	// followed by: TraceCallerEntry[uniqueCallers]
+};
+
+// --- System inspection ---
+// cpu = logical processor index; ~0u = any (the backend picks one).
+struct PhysicalMemoryRequest {   // ReadPhysical / ReadSystemMemory; Write* append `size` bytes
+	uint64_t address;
+	uint32_t size;              // at most kSystemMemoryMax
+	uint32_t reserved;
+};
+static constexpr uint32_t kSystemMemoryMax = 0x10000;
+// Response: IpcStatus, then the bytes read (reads) or nothing (writes).
+
+struct TranslateAddressRequest {
+	uint64_t address;
+	uint32_t flags;             // kTranslateTargetSpace: the target's address space (else the kernel's)
+	uint32_t reserved;
+};
+static constexpr uint32_t kTranslateTargetSpace = 1;
+struct TranslateAddressResponse {
+	IpcStatus status;
+	uint32_t  levels;           // 4 or 5
+	uint64_t  cr3;
+	uint64_t  entries[5];       // PML5E (5-level only), PML4E, PDPTE, PDE, PTE; walk order
+	uint32_t  entryCount;       // entries filled (a large page or a non-present entry ends the walk)
+	uint32_t  present;          // the address translates
+	uint64_t  physical;
+	uint64_t  pageSize;
+};
+
+struct PhysicalToVirtualRequest {
+	uint64_t physical;
+};
+struct PhysicalToVirtualResponse {
+	IpcStatus status;
+	uint32_t  reserved;
+	uint64_t  address;          // 0 when no kernel mapping exists
+};
+
+struct AccessMsrRequest {
+	uint32_t cpu;
+	uint32_t index;
+	uint32_t write;
+	uint32_t reserved;
+	uint64_t value;
+};
+struct AccessMsrResponse {
+	IpcStatus status;           // Error: the MSR faulted (#GP)
+	uint32_t  cpu;
+	uint64_t  value;
+};
+
+struct ExecuteCpuidRequest {
+	uint32_t cpu;
+	uint32_t leaf;
+	uint32_t subleaf;
+	uint32_t reserved;
+};
+struct ExecuteCpuidResponse {
+	IpcStatus status;
+	uint32_t  cpu;
+	uint32_t  eax, ebx, ecx, edx;
+};
+
+struct AccessPortRequest {
+	uint16_t port;
+	uint8_t  size;              // 1, 2 or 4
+	uint8_t  write;
+	uint32_t value;
+};
+struct AccessPortResponse {
+	IpcStatus status;
+	uint32_t  value;
+};
+
+struct QueryIdtRequest {
+	uint32_t cpu;
+};
+struct IdtEntry {
+	uint64_t handler;
+	uint16_t selector;
+	uint8_t  ist;
+	uint8_t  type;              // gate type (14 interrupt, 15 trap)
+	uint8_t  dpl;
+	uint8_t  present;
+	uint8_t  reserved[2];
+};
+struct QueryIdtResponse {
+	IpcStatus status;
+	uint32_t  cpu;
+	uint64_t  base;
+	uint32_t  limit;
+	uint32_t  count;            // IdtEntry[count] follow
+};
+
+struct QueryApicRequest {
+	uint32_t cpu;
+};
+struct ApicRegister {
+	uint32_t offset;            // xAPIC MMIO offset (x2APIC MSR = 0x800 + offset / 16)
+	uint32_t value;
+};
+struct QueryApicResponse {
+	IpcStatus status;
+	uint32_t  cpu;
+	uint64_t  baseMsr;          // IA32_APIC_BASE
+	uint32_t  x2apic;
+	uint32_t  count;            // ApicRegister[count] follow
+};
+
+struct IoApicRedirection {
+	uint64_t entry;
+};
+struct QueryIoApicResponse {
+	IpcStatus status;
+	uint32_t  id;
+	uint64_t  address;          // MMIO base (ACPI MADT)
+	uint32_t  gsiBase;
+	uint32_t  version;          // bits 0-7 version, 16-23 max redirection entry
+	uint32_t  count;            // IoApicRedirection[count] follow
+	uint32_t  reserved;
+};
+
+struct AccessPciConfigRequest {
+	uint8_t  bus;
+	uint8_t  device;
+	uint8_t  function;
+	uint8_t  write;
+	uint16_t offset;            // within the 256-byte configuration space
+	uint16_t size;              // bytes; writes append them
+};
+// Response: IpcStatus, then the bytes read. NotFound: no device there.
+
+struct SystemModuleEntry {
+	uint64_t base;
+	uint32_t size;
+	uint32_t reserved;
+	char     path[256];
+};
+struct GetSystemModulesResponse {
+	IpcStatus status;
+	uint32_t  count;            // SystemModuleEntry[count] follow
 };
 
 // --- Backend capabilities ---
