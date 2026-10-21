@@ -1491,6 +1491,14 @@ std::vector<McpServer::ToolDef> McpServer::BuildAllToolsList() {
 				{"filter", {{"type", "string"}, {"description", "Case-insensitive substring of the path"}}}
 			 }}}}}),
 
+		Tool(&McpServer::ToolAddressSpace, "system", 0, true,
+			{{"name", "veh_address_space"}, {"description", "The target's page-table root (CR3) by several methods, each checked by reading the PEB through it: the process object's record, the isolation user root, the root seen with its threads, a probe of every root the processors load, and a physical-memory scan. use=chosen makes later memory access use the chosen root (for targets that tamper with their process object); use=os reverts. Needs a hypervisor backend."},
+			 {"inputSchema", {{"type", "object"}, {"properties", {
+				{"method", {{"type", "string"}, {"enum", json::array({"auto", "kernel_record", "user_shadow", "observed", "probe", "scan", "all"})}, {"description", "Default: auto (first valid)"}}},
+				{"use", {{"type", "string"}, {"enum", json::array({"chosen", "os"})}, {"description", "chosen: use the first valid root from now on; os: back to the OS record"}}},
+				{"probe_ms", {{"type", "integer"}, {"description", "Probe window in ms (default 100, max 2000)"}}}
+			 }}}}}),
+
 		Tool(&McpServer::ToolMemoryMap, "memory", 0, true,
 			{{"name", "veh_memory_map"}, {"description", "List virtual memory regions (VirtualQuery) with state, protection (r/rw/rx/rwx, +guard), type (image/private/mapped) and owning module. Limited by max_regions; when truncated, pass next_start as start to continue."},
 		 {"inputSchema", {{"type", "object"}, {"properties", {

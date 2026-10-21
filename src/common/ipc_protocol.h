@@ -113,6 +113,7 @@ enum class IpcCommand : uint32_t {
 	QueryIoApic            = 0x008B,
 	AccessPciConfig        = 0x008C,
 	GetSystemModules       = 0x008D,  // kernel modules
+	ResolveAddressSpace    = 0x008E,  // the target's page-table root (CR3) by several methods
 
 	// Lifecycle
 	GetCapabilities        = 0x00FC,  // backend identity and per-command support (older peers answer InvalidArgs)
@@ -1513,6 +1514,36 @@ struct SystemModuleEntry {
 struct GetSystemModulesResponse {
 	IpcStatus status;
 	uint32_t  count;            // SystemModuleEntry[count] follow
+};
+
+// Every candidate is checked by reading the target's PEB through it. With
+// apply, the chosen root replaces the one the OS reports for later accesses.
+enum class AddressSpaceMethod : uint32_t {
+	Auto = 0,          // first valid of the methods below, in order
+	KernelRecord = 1,  // the process object's page-table root
+	UserShadow = 2,    // the user-only root of kernel page-table isolation
+	Observed = 3,      // the root in use when the backend last saw one of its threads
+	Probe = 4,         // every root the processors load during a short window
+	Scan = 5,          // physical pages that translate the PEB correctly
+	All = 6,
+};
+struct ResolveAddressSpaceRequest {
+	AddressSpaceMethod method;
+	uint32_t apply;             // 1 = use the chosen root from now on, 2 = back to the OS record
+	uint32_t probeMs;           // Probe window (default 100, max 2000)
+	uint32_t reserved;
+};
+struct AddressSpaceCandidate {
+	uint64_t root;
+	AddressSpaceMethod method;
+	uint32_t valid;
+};
+struct ResolveAddressSpaceResponse {
+	IpcStatus status;
+	uint32_t  count;            // AddressSpaceCandidate[count] follow
+	uint32_t  chosen;           // index, UINT32_MAX = none valid
+	uint32_t  probed;           // distinct roots the probe saw (all processes)
+	uint64_t  inUse;            // root used for the target now
 };
 
 // --- Backend capabilities ---

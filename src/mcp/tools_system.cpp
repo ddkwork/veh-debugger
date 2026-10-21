@@ -530,4 +530,33 @@ json McpServer::ToolPci(const json& args) {
 	return {{"error", "operation must be tree, read, or write"}};
 }
 
+json McpServer::ToolAddressSpace(const json& args) {
+	static const char* const names[] = {"auto", "kernel_record", "user_shadow", "observed", "probe", "scan", "all"};
+	const std::string method = args.value("method", "auto");
+	uint32_t m = 0;
+	while (m < 7 && method != names[m]) ++m;
+	if (m == 7) return {{"error", "method must be auto, kernel_record, user_shadow, observed, probe, scan, or all"}};
+	const std::string use = args.value("use", "");
+	if (!use.empty() && use != "chosen" && use != "os") return {{"error", "use must be chosen or os"}};
+	ResolveAddressSpaceRequest req{static_cast<AddressSpaceMethod>(m), use == "chosen" ? 1u : use == "os" ? 2u : 0u,
+		JsonUint32(args, "probe_ms", 100), 0};
+	json error;
+	std::vector<uint8_t> resp;
+	if (!SystemExchange(IpcCommand::ResolveAddressSpace, &req, sizeof(req), resp, error)) return error;
+	if (resp.size() < sizeof(ResolveAddressSpaceResponse)) return {{"error", "short response"}};
+	const auto* head = reinterpret_cast<const ResolveAddressSpaceResponse*>(resp.data());
+	if (head->status != IpcStatus::Ok) return {{"error", StatusText(head->status)}};
+	const size_t count = std::min<size_t>(head->count, (resp.size() - sizeof(*head)) / sizeof(AddressSpaceCandidate));
+	const auto* list = reinterpret_cast<const AddressSpaceCandidate*>(resp.data() + sizeof(*head));
+	json candidates = json::array();
+	for (size_t i = 0; i < count; ++i) {
+		const uint32_t cm = static_cast<uint32_t>(list[i].method);
+		candidates.push_back({{"method", cm < 7 ? names[cm] : "?"}, {"root", HexAddr(list[i].root)}, {"valid", list[i].valid != 0}});
+	}
+	json out = {{"candidates", candidates}, {"in_use", HexAddr(head->inUse)}};
+	if (head->chosen < count) out["chosen"] = HexAddr(list[head->chosen].root);
+	if (m == 4 || m == 6 || head->probed) out["probe_roots_seen"] = head->probed;
+	return out;
+}
+
 } // namespace veh
