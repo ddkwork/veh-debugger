@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Fixed
+- **Shellcode IPC wait budget** -- execution waits use the requested timeout plus backend setup and cleanup time, so valid runs longer than three seconds do not fail at the transport's default deadline.
 - **Missing compare-exchange trace writes** -- `veh_trace_basic_blocks` now records memory writes for `cmpxchg`, `cmpxchg8b`, and `cmpxchg16b`, with or without `LOCK`, in inline events, `.vte` streams, and aggregate write tables. Both successful exchanges and failed comparisons carry actual before/after bytes; failed comparisons and successful same-value stores remain write events even when the bytes are unchanged.
 - **Conditional operand dependency gaps** -- register dependency tracking includes conditional reads and writes and conservatively retains a conditional destination's previous origins. Memory-source `cmov` reads are collected on either outcome. Other conditional or masked memory accesses whose executed bytes cannot be determined are reported as unsupported instead of silently omitted or fabricated as full-operand accesses; dependency results are marked incomplete when an unsupported memory access is encountered.
 

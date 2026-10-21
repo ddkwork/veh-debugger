@@ -1189,8 +1189,12 @@ ShellcodeResult DebugSession::ExecuteShellcode(const uint8_t* code, uint32_t siz
 	memcpy(payload.data() + sizeof(ExecuteShellcodeRequest), code, size);
 
 	std::vector<uint8_t> respData;
+	// Include backend setup and confirmed-termination cleanup in the IPC budget.
+	// The default 3-second exchange timeout can expire before the requested run.
+	const int ipcTimeout = static_cast<int>(std::min<uint64_t>(
+		static_cast<uint64_t>(timeoutMs) + 20000, 0x7FFFFFFF));
 	if (!ipcTransport_->SendAndReceive(IpcCommand::ExecuteShellcode, payload.data(),
-	                                 static_cast<uint32_t>(payload.size()), respData))
+	                                 static_cast<uint32_t>(payload.size()), respData, ipcTimeout))
 		return result;
 	if (respData.size() < sizeof(ExecuteShellcodeResponse)) return result;
 
