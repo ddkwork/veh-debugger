@@ -125,6 +125,13 @@ enum class IpcCommand : uint32_t {
 	DrainSystemEvents      = 0x0093,
 	AddHiddenHook          = 0x0094,  // execution hook that edits registers / returns at once; code untouched
 
+	// Branch tracing: last branches of a stopped thread (LBR) or the full path
+	// of the target (Intel PT). Query says what the machine offers, and why not.
+	QueryBranchTrace       = 0x0098,
+	StartBranchTrace       = 0x0099,
+	StopBranchTrace        = 0x009A,
+	ReadBranchTrace        = 0x009B,
+
 	// Lifecycle
 	GetCapabilities        = 0x00FC,  // backend identity and per-command support (older peers answer InvalidArgs)
 	Heartbeat              = 0x00FE,
@@ -1649,6 +1656,40 @@ struct AddHiddenHookRequest {
 struct AddHiddenHookResponse {
 	IpcStatus status;
 	uint32_t  id;
+};
+
+enum class BranchTraceKind : uint32_t {
+	LastBranches = 1,   // recorded continuously; a stopping thread keeps the ones that led to its stop
+	FullPath = 2,       // every branch of the target process while running
+};
+struct QueryBranchTraceResponse {
+	IpcStatus status;
+	uint32_t  lastBranches;     // usable
+	uint32_t  lastBranchDepth;
+	uint32_t  fullPath;         // usable
+	uint32_t  active;           // BranchTraceKind running, 0 none
+	char      provider[32];     // e.g. "Intel PT", "Intel LBR", "AMD LBRv2", "none"
+	char      lastBranchesReason[128]; // empty when usable
+	char      fullPathReason[128];
+};
+struct StartBranchTraceRequest {
+	uint32_t kind;              // BranchTraceKind
+	uint32_t bufferKb;          // FullPath: per processor (power of two; 0 = 4096)
+};
+struct ReadBranchTraceRequest {
+	uint32_t kind;              // BranchTraceKind
+	uint32_t threadId;          // LastBranches: a stopped thread
+	uint32_t maxBranches;       // 0 = as many as fit
+};
+struct BranchRecord {
+	uint64_t from;
+	uint64_t to;
+};
+struct ReadBranchTraceResponse {
+	IpcStatus status;
+	uint32_t  kind;
+	uint32_t  count;            // BranchRecord[count] follow (newest first for LastBranches)
+	uint32_t  lost;             // FullPath: places where data was lost or the walk lost sync
 };
 
 struct ResolveAddressSpaceResponse {

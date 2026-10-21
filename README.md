@@ -378,6 +378,7 @@ enabled = true
 |------|-----------|------|
 | `veh_event` | `operation, type, value?/low?/high?, address?, size?, pid?, tid?, cpu?, mode?, action?` | 머신 전체 이벤트: `cpuid`, `msr_read`/`msr_write`, `exception`, `port_in`/`port_out`, `syscall`, `hypercall`, `xsetbv`, `rdtsc`, `memory_read`/`memory_write`/`memory_execute`. 조건(pid/tid/CPU/커널·유저/값 범위)에 맞으면 레지스터와 함께 기록. 가로챈 명령은 그대로 한 번 실제 실행되므로 대상은 차이를 보지 못한다. `action=stop`은 커널 디버거가 연결돼 있으면 머신 전체를 정지 |
 | `veh_event_records` | `max?, registers?` | 이벤트 기록 가져오기 (CPU, 프로세스/스레드, 모드, 값, rip/rsp/cr3, 타임스탬프) |
+| `veh_branch_trace` | `operation, kind?, threadId?, buffer_kb?, max?` | 하드웨어 분기 기록 공통 인터페이스: `last`(LBR: 스레드가 멈추기 직전 분기들), `full`(Intel PT: 대상 프로세스의 전체 실행 경로를 분기 목록으로 복원). `status`는 이 기계에서 무엇을 쓸 수 있는지, 못 쓰면 이유(제조사, 하위 하이퍼바이저 미노출, 비활성)와 대안을 알려준다 |
 | `veh_hidden_hook` | `operation, address, pid?, set?, return?, pop?` | 숨은 실행 훅: 주소가 실행될 때 레지스터를 바꾸거나(`set`) 함수를 즉시 반환값과 함께 돌려보냄(`return`, stdcall은 `pop`). 코드 바이트는 그대로, 스레드도 멈추지 않음. `pid` 생략 시 커널 주소 |
 
 **정지형 커널 디버깅** (GDB 원격 시리얼 프로토콜 스텁에 연결, 대상 프로세스 attach와 무관)

@@ -1527,6 +1527,16 @@ std::vector<McpServer::ToolDef> McpServer::BuildAllToolsList() {
 				{"id", {{"type", "integer"}, {"description", "remove: the hook id"}}}
 			 }}}}}),
 
+		Tool(&McpServer::ToolBranchTrace, "system", 0, true,
+			{{"name", "veh_branch_trace"}, {"description", "Hardware branch tracing through a common interface: last branches (LBR: the branches that led to a thread's stop) or the full path of the target (Intel PT, reconstructed into branches). status reports what this machine offers and, when it does not, why (vendor, not exposed by a hypervisor below, disabled). Needs a hypervisor backend."},
+			 {"inputSchema", {{"type", "object"}, {"properties", {
+				{"operation", {{"type", "string"}, {"enum", json::array({"status", "start", "stop", "read"})}, {"description", "Default: status"}}},
+				{"kind", {{"type", "string"}, {"enum", json::array({"last", "full"})}, {"description", "Default: last"}}},
+				{"threadId", {{"type", "integer"}, {"description", "read last: a stopped thread"}}},
+				{"buffer_kb", {{"type", "integer"}, {"description", "start full: per processor, power of two (default 4096)"}}},
+				{"max", {{"type", "integer"}, {"description", "read: branches (default 4096)"}}}
+			 }}}}}),
+
 		// Halting kernel debugging (GDB remote serial protocol); independent of the attached process.
 		Tool(&McpServer::ToolKdConnect, "kernel", 0, false,
 			{{"name", "veh_kd_connect"}, {"description", "Connect to a halting kernel debugger stub that speaks the GDB remote serial protocol (a hypervisor stub, a VM's gdbstub). Connecting halts every CPU of the target machine. Transports: pipe (e.g. a VM's COM port mapped to a host named pipe), com (serial port), tcp."},
@@ -1584,10 +1594,12 @@ std::vector<McpServer::ToolDef> McpServer::BuildAllToolsList() {
 				{"cpu", {{"type", "integer"}}}
 			 }}, {"required", json::array({"address"})}}}}),
 		Tool(&McpServer::ToolKdBreakpoint, "kernel", 0, false,
-			{{"name", "veh_kd_breakpoint"}, {"description", "Kernel execution breakpoints: add, remove, list. The stub decides how (a hypervisor stub hides them: code bytes stay unchanged)."},
+			{{"name", "veh_kd_breakpoint"}, {"description", "Kernel breakpoints (execute) and watchpoints (write, read, access; the machine stops after the access): add, remove, list. The stub decides how (a hypervisor stub hides them: memory stays unchanged)."},
 			 {"inputSchema", {{"type", "object"}, {"properties", {
 				{"action", {{"type", "string"}, {"enum", json::array({"add", "remove", "list"})}, {"description", "Default: list"}}},
-				{"address", {{"type", "string"}, {"description", "Hex"}}}
+				{"address", {{"type", "string"}, {"description", "Hex"}}},
+				{"kind", {{"type", "string"}, {"enum", json::array({"execute", "write", "read", "access"})}, {"description", "Default: execute"}}},
+				{"size", {{"type", "integer"}, {"description", "Watchpoints: bytes (within one page)"}}}
 			 }}}}}),
 		Tool(&McpServer::ToolKdMonitor, "kernel", 0, false,
 			{{"name", "veh_kd_monitor"}, {"description", "A stub-specific monitor command (gdb 'monitor'), e.g. help, regs, cpus."},

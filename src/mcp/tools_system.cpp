@@ -695,6 +695,51 @@ json McpServer::ToolHiddenHook(const json& args) {
 		{"note", "every hit is also a veh_event_records entry (type memory_execute)"}};
 }
 
+json McpServer::ToolBranchTrace(const json& args) {
+	const std::string op = args.value("operation", "status");
+	const std::string kind_name = args.value("kind", "last");
+	const uint32_t kind = kind_name == "full" ? 2u : 1u;
+	json error;
+	std::vector<uint8_t> resp;
+	if (op == "status") {
+		if (!SystemExchange(IpcCommand::QueryBranchTrace, nullptr, 0, resp, error)) return error;
+		if (resp.size() < sizeof(QueryBranchTraceResponse)) return {{"error", "short response"}};
+		const auto* q = reinterpret_cast<const QueryBranchTraceResponse*>(resp.data());
+		json out = {{"provider", q->provider}, {"active", q->active == 2 ? "full" : q->active == 1 ? "last" : "none"},
+			{"last_branches", {{"available", q->lastBranches != 0}, {"depth", q->lastBranchDepth}}},
+			{"full_path", {{"available", q->fullPath != 0}}}};
+		if (!q->lastBranches) out["last_branches"]["reason"] = q->lastBranchesReason;
+		if (!q->fullPath) out["full_path"]["reason"] = q->fullPathReason;
+		if (!q->lastBranches && !q->fullPath)
+			out["alternative"] = "veh_trace_basic_blocks traces by single-stepping: slower, works everywhere";
+		return out;
+	}
+	if (op == "start" || op == "stop") {
+		StartBranchTraceRequest req{kind, JsonUint32(args, "buffer_kb", 0)};
+		if (!SystemExchange(op == "start" ? IpcCommand::StartBranchTrace : IpcCommand::StopBranchTrace, &req,
+				sizeof(req), resp, error))
+			return error;
+		const IpcStatus status = *reinterpret_cast<const IpcStatus*>(resp.data());
+		if (status != IpcStatus::Ok) {
+			json out = {{"error", std::string(op) + " failed: " + StatusText(status)}};
+			if (op == "start") out["hint"] = "veh_branch_trace status says why";
+			return out;
+		}
+		return {{op == "start" ? "started" : "stopped", kind_name}};
+	}
+	if (op != "read") return {{"error", "operation: status, start, stop, read"}};
+	ReadBranchTraceRequest req{kind, JsonUint32(args, "threadId", 0), JsonUint32(args, "max", 4096)};
+	if (!SystemExchange(IpcCommand::ReadBranchTrace, &req, sizeof(req), resp, error)) return error;
+	if (resp.size() < sizeof(ReadBranchTraceResponse)) return {{"error", "short response"}};
+	const auto* head = reinterpret_cast<const ReadBranchTraceResponse*>(resp.data());
+	if (head->status != IpcStatus::Ok) return {{"error", std::string("read failed: ") + StatusText(head->status)}};
+	const auto* b = reinterpret_cast<const BranchRecord*>(head + 1);
+	json list = json::array();
+	for (uint32_t i = 0; i < head->count && sizeof(*head) + (i + 1) * sizeof(*b) <= resp.size(); ++i)
+		list.push_back({{"from", HexAddr(b[i].from)}, {"to", HexAddr(b[i].to)}});
+	return {{"kind", kind_name}, {"branches", list}, {"count", head->count}, {"lost", head->lost}};
+}
+
 json McpServer::ToolEventRecords(const json& args) {
 	DrainSystemEventsRequest req{JsonUint32(args, "max", 256)};
 	json error;

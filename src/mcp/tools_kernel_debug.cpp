@@ -56,6 +56,14 @@ json StopJson(const std::string& stop)
 	if (stop.size() >= 3 && (stop[0] == 'T' || stop[0] == 'S')) {
 		const int sig = std::stoi(stop.substr(1, 2), nullptr, 16);
 		j["reason"] = sig == 5 ? "breakpoint or step" : sig == 2 ? "interrupt" : "signal " + std::to_string(sig);
+		for (const char* tag : { "awatch:", "rwatch:", "watch:" }) {
+			const size_t w = stop.find(tag);
+			if (w != std::string::npos && (w == 0 || stop[w - 1] == ';' || stop[w - 1] == ':' || std::isxdigit(static_cast<unsigned char>(stop[w - 1])))) {
+				j["reason"] = "watchpoint";
+				j["data_address"] = "0x" + stop.substr(w + std::strlen(tag), stop.find(';', w) - w - std::strlen(tag));
+				break;
+			}
+		}
 		const size_t t = stop.find("thread:");
 		if (t != std::string::npos)
 			j["cpu"] = std::stoi(stop.substr(t + 7), nullptr, 16) - 1;
@@ -336,8 +344,12 @@ json McpServer::ToolKdBreakpoint(const json& args)
 	if (kd_->running())
 		return {{"error", "running: veh_kd_break first"}};
 	const uint64_t address = ParseHex(args.value("address", "0"));
-	char packet[48];
-	snprintf(packet, sizeof(packet), "%s,%llx,1", action == "remove" ? "z0" : "Z0", static_cast<unsigned long long>(address));
+	const std::string kind = args.value("kind", "execute");
+	const char type = kind == "write" ? '2' : kind == "read" ? '3' : kind == "access" ? '4' : '0';
+	const uint32_t size = type == '0' ? 1 : JsonUint32(args, "size", 1);
+	char packet[64];
+	snprintf(packet, sizeof(packet), "%c%c,%llx,%x", action == "remove" ? 'z' : 'Z', type,
+		static_cast<unsigned long long>(address), size);
 	std::string reply;
 	if (!kd_->Request(packet, &reply))
 		return {{"error", "no answer"}};
@@ -349,7 +361,8 @@ json McpServer::ToolKdBreakpoint(const json& args)
 		kd_breakpoints_.erase(address);
 	else
 		kd_breakpoints_.insert(address);
-	return {{"success", true}, {"action", action == "remove" ? "remove" : "add"}, {"address", HexAddr(address)}};
+	return {{"success", true}, {"action", action == "remove" ? "remove" : "add"}, {"address", HexAddr(address)},
+		{"kind", kind}};
 }
 
 json McpServer::ToolKdMonitor(const json& args)
