@@ -1,0 +1,14 @@
+id: veh.mcp.vm-scope
+revision: 1
+summary: Verify explicit VM control and vCPU trace through MCP against a synthetic host fixture
+tags: [mcp, integration, vm]
+execution:
+  kind: cli
+  executable_ref: py
+  cwd: .
+  argv_template: [-3, -B, test/test_virtual_machine.py]
+  trusted_for_run: true
+  timeout_sec: 60
+  artifact_mode: metadata
+docs: [docs/DEVELOPMENT_TOOLS.md]
+cache_policy: disabled

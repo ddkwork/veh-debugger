@@ -178,3 +178,7 @@ the host-only `guest_backend_fixture` target to check PID collisions, metadata
 failures, registered scope, bitness and unsupported pause/terminate handling.
 Attach/launch replace sessions and remain excluded from batch and breakpoint
 actions; existing inspect commands retain their ordinary batch/action routes.
+
+`py -3 -B test/test_virtual_machine.py` verifies VM-scope MCP behavior using a
+synthetic host fixture: direct/toolbox parity, exact64-bit timestamp strings,
+loss/partial-failure validation, manual-only nesting and no guest execution.

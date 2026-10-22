@@ -1,6 +1,8 @@
 #include "mcp_server.h"
 #include "tools_common.h"
 #include <algorithm>
+#include <charconv>
+#include <limits>
 #include <cstring>
 #include <fstream>
 #include <iomanip>
@@ -96,6 +98,87 @@ bool McpServer::SystemExchange(IpcCommand cmd, const void* payload, uint32_t siz
 		return false;
 	}
 	return true;
+}
+
+
+json McpServer::ToolVirtualMachine(const json& args) {
+    const std::string op=args.value("operation", "");
+    json error;std::vector<uint8_t> bytes;
+    if(op=="status"||op=="pause"||op=="resume") {
+        const auto action=op=="status"?VirtualMachineAction::Query:
+            op=="pause"?VirtualMachineAction::Pause:VirtualMachineAction::Resume;
+        ControlVirtualMachineRequest request{action,0};
+        if(!SystemExchange(IpcCommand::ControlVirtualMachine,&request,sizeof(request),bytes,error))return error;
+        ControlVirtualMachineResponse response{};
+        if(bytes.size()!=sizeof(response))return {{"error","Invalid VM control response"}};
+        std::memcpy(&response,bytes.data(),sizeof(response));
+        if(response.status!=IpcStatus::Ok)return {{"error",StatusText(response.status)},{"scope","virtualMachine"}};
+        if(static_cast<uint32_t>(response.state)>3)return {{"error","Invalid VM state"}};
+        const char* state=response.state==VirtualMachineState::Running?"running":
+            response.state==VirtualMachineState::Paused?"paused":
+            response.state==VirtualMachineState::PoweredOff?"poweredOff":"other";
+        return {{"success",true},{"scope","virtualMachine"},{"state",state}};
+    }
+    if(op!="trace")return {{"error","operation must be status, pause, resume or trace"}};
+    TraceVirtualCpuRequest request{};
+    const auto number=[&](const char* key,uint32_t fallback,uint32_t minimum,uint32_t maximum,uint32_t& out) {
+        if(!args.contains(key)){out=fallback;return true;}
+        const auto& v=args[key];if(!v.is_number_unsigned()&&!v.is_number_integer())return false;
+        if(v.is_number_integer()&&v.get<int64_t>()<0)return false;
+        const auto n=v.get<uint64_t>();if(n<minimum||n>maximum)return false;out=static_cast<uint32_t>(n);return true;
+    };
+    const auto address=[](const json& value,uint64_t& out) {
+        if(!value.is_string())return false;const auto s=value.get<std::string>();
+        const size_t skip=s.size()>2&&s[0]=='0'&&(s[1]=='x'||s[1]=='X')?2:0;
+        const auto parsed=std::from_chars(s.data()+skip,s.data()+s.size(),out,skip?16:10);
+        return parsed.ec==std::errc{}&&parsed.ptr==s.data()+s.size();
+    };
+    if(!number("cpu",0,0,UINT32_MAX,request.cpu)||
+       !number("max_instructions",64,1,4096,request.maxInstructions)||
+       !number("duration_ms",10,1,100,request.durationMs)||
+       !number("cpl_mask",15,1,15,request.cplMask))return {{"error","Invalid CPU, instruction, duration or CPL limit"}};
+    for(const auto& field:{std::make_pair("rip_begin",&request.ripBegin),std::make_pair("rip_end",&request.ripEnd)})
+        if(args.contains(field.first)&&!address(args[field.first],*field.second))return {{"error","RIP bounds must be exact unsigned address strings"}};
+    if(request.ripBegin>request.ripEnd)return {{"error","Reversed RIP bounds"}};
+    if(args.contains("cr3_roots")) {
+        const auto& roots=args["cr3_roots"];
+        if(!roots.is_array()||roots.size()>2)return {{"error","At most two CR3 roots are supported"}};
+        for(const auto& root:roots) {
+            auto& value=request.cr3Roots[request.cr3Count];
+            if(!address(root,value)||!value||(value&~UINT64_C(0x000FFFFFFFFFF000)))return {{"error","CR3 roots must be exact nonzero page-aligned address strings"}};
+            ++request.cr3Count;
+        }
+    }
+    if(!SystemExchange(IpcCommand::TraceVirtualCpu,&request,sizeof(request),bytes,error))return error;
+    TraceVirtualCpuResponse response{};
+    if(bytes.size()<sizeof(response))return {{"error","Invalid vCPU trace response"}};
+    std::memcpy(&response,bytes.data(),sizeof(response));
+    const uint64_t recorded=static_cast<uint64_t>(response.count)+response.lost;
+    if(response.wireVersion!=1||response.engine!=1||response.count>64||response.completed>request.maxInstructions||
+       response.lost>response.completed||recorded<response.lost||recorded>response.completed||
+       response.stopReason<1||response.stopReason>4||
+       bytes.size()!=sizeof(response)+static_cast<size_t>(response.count)*sizeof(VirtualCpuInstructionRecord)||
+       (response.status==IpcStatus::Ok&&(recorded!=response.completed||response.executionStatus||response.stopReason==4)))
+        return {{"error","Inconsistent vCPU trace accounting"}};
+    json records=json::array();
+    for(uint32_t i=0;i<response.count;++i) {
+        VirtualCpuInstructionRecord record{};
+        std::memcpy(&record,bytes.data()+sizeof(response)+static_cast<size_t>(i)*sizeof(record),sizeof(record));
+        if(record.cpu!=request.cpu||record.cpl>3||record.sequence!=static_cast<uint64_t>(i)+1)
+            return {{"error","Invalid vCPU instruction record"}};
+        records.push_back({{"sequence",record.sequence},{"timestampNs",std::to_string(record.timestampNs)},
+            {"cpu",record.cpu},{"cpl",record.cpl},{"cr3",HexAddr(record.cr3)},
+            {"ip",HexAddr(record.ip)},{"nextIp",HexAddr(record.nextIp)},
+            {"rax",HexAddr(record.rax)},{"rbx",HexAddr(record.rbx)},{"rcx",HexAddr(record.rcx)},
+            {"rdx",HexAddr(record.rdx)},{"rsp",HexAddr(record.rsp)},{"rflags",HexAddr(record.rflags)}});
+    }
+    const char* reason=response.stopReason==1?"budget":response.stopReason==2?"deadline":response.stopReason==3?"filter":"failure";
+    json result={{"success",response.status==IpcStatus::Ok},{"scope","virtualMachine"},{"traceScope","vCPU"},
+        {"cpu",request.cpu},{"engine","interpreter"},{"completed",response.completed},{"kept",response.count},
+        {"lost",response.lost},{"elapsedNs",std::to_string(response.elapsedNs)},{"stopReason",reason},
+        {"executionStatus",response.executionStatus},{"records",std::move(records)}};
+    if(response.status!=IpcStatus::Ok)result["error"]="vCPU execution failed; partial execution and side effects may remain";
+    return result;
 }
 
 json McpServer::ToolSystemMemory(const json& args) {

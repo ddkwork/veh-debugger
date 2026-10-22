@@ -43,6 +43,7 @@ constexpr CommandName kOptionalCommands[] = {
 	{IpcCommand::TraceMemory, "trace_memory"}, {IpcCommand::ResolveImport, "resolve_import"},
 	{IpcCommand::TraceCalls, "trace_calls"}, {IpcCommand::TraceBasicBlocks, "trace_basic_blocks"},
 	{IpcCommand::Terminate, "terminate"}, {IpcCommand::ReadPhysical, "system_inspection"},
+    {IpcCommand::ControlVirtualMachine, "virtual_machine_control"}, {IpcCommand::TraceVirtualCpu, "virtual_cpu_trace"},
 };
 
 // "agent" (path, optional "agent_args") or a "backend" name other than "veh"

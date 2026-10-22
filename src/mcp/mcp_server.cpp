@@ -1426,6 +1426,21 @@ std::vector<McpServer::ToolDef> McpServer::BuildAllToolsList() {
 			 }}, {"required", json::array({"address", "size", "protection"})}}}}),
 
 		// System inspection: needs a backend running below the OS; other backends report it unavailable.
+        // VM-wide execution is manual-only: process-scoped automatic actions
+        // and capture/batch setup must not unexpectedly resume the entire VM.
+        Tool(&McpServer::ToolVirtualMachine, "system", 0, false,
+            {{"name", "veh_virtual_machine"}, {"description", "Explicit VM-wide status/pause/resume, or a bounded instruction trace on one vCPU while the VM remains paused. Independent of the attached guest PID; other vCPUs remain stopped during trace. Reports interpreter engine and lost records. Filters stop before out-of-scope execution. Manual calls only; excluded from batch, capture setup and breakpoint actions."},
+             {"inputSchema", {{"type", "object"}, {"properties", {
+                {"operation", {{"type", "string"}, {"enum", json::array({"status", "pause", "resume", "trace"})}}},
+                {"cpu", {{"type", "integer"}, {"minimum", 0}}},
+                {"max_instructions", {{"type", "integer"}, {"minimum", 1}, {"maximum", 4096}}},
+                {"duration_ms", {{"type", "integer"}, {"minimum", 1}, {"maximum", 100}}},
+                {"cpl_mask", {{"type", "integer"}, {"minimum", 1}, {"maximum", 15}}},
+                {"cr3_roots", {{"type", "array"}, {"maxItems", 2}, {"items", {{"type", "string"}}}, {"description", "Exact page-aligned roots; empty means all address spaces"}}},
+                {"rip_begin", {{"type", "string"}}},
+                {"rip_end", {{"type", "string"}, {"description", "Exclusive upper boundary; equal bounds disable range filtering"}}}
+             }}, {"required", json::array({"operation"})}}}}),
+
 		Tool(&McpServer::ToolSystemMemory, "system", 0, true,
 			{{"name", "veh_system_memory"}, {"description", "Kernel virtual or physical memory: read, write (kernel writes go through physical memory and ignore page protection), search (hex pattern with ?? wildcards), or dump a range to a file. Needs a hypervisor backend."},
 			 {"inputSchema", {{"type", "object"}, {"properties", {

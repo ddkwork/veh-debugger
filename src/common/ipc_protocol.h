@@ -125,6 +125,10 @@ enum class IpcCommand : uint32_t {
 	DrainSystemEvents      = 0x0093,
 	AddHiddenHook          = 0x0094,  // execution hook that edits registers / returns at once; code untouched
 
+	// Explicit VM-wide execution; separate from process/thread Pause/Continue.
+	ControlVirtualMachine  = 0x0095,
+	TraceVirtualCpu        = 0x0096,
+
 	// Branch tracing: last branches of a stopped thread (LBR) or the full path
 	// of the target (Intel PT). Query says what the machine offers, and why not.
 	QueryBranchTrace       = 0x0098,
@@ -1703,6 +1707,43 @@ struct ResolveAddressSpaceResponse {
 	uint32_t  probed;           // distinct roots the probe saw (all processes)
 	uint64_t  inUse;            // root used for the target now
 };
+
+// --- Explicit virtual-machine execution (wire version1) ---
+// These operations affect the VM, independently of the attached guest PID.
+// Trace executes just the selected vCPU while every other vCPU stays paused.
+// They do not implement selective OS-thread stops or hardware trace throughput.
+enum class VirtualMachineAction : uint32_t { Query = 0, Pause = 1, Resume = 2 };
+enum class VirtualMachineState : uint32_t { Other = 0, Running = 1, Paused = 2, PoweredOff = 3 };
+struct ControlVirtualMachineRequest { VirtualMachineAction action; uint32_t reserved; };
+struct ControlVirtualMachineResponse { IpcStatus status; VirtualMachineState state; };
+struct TraceVirtualCpuRequest {
+    uint32_t cpu, cplMask;
+    uint64_t cr3Roots[2];
+    uint64_t ripBegin, ripEnd; // exclusive; equal disables the RIP boundary
+    uint32_t maxInstructions, durationMs, cr3Count, reserved;
+};
+// CR3/CPL/RIP filters stop BEFORE executing out of scope. Deadline is checked
+// between instructions and cannot interrupt one instruction/device handler.
+// engine1=interpreter; stopReason1=budget,2=deadline,3=filter,4=failure.
+// At most64 records; success: completed=count+lost. Failure can have side effects
+// and can retire an instruction whose post-state could not be captured.
+struct TraceVirtualCpuResponse {
+    IpcStatus status;
+    uint32_t wireVersion;
+    uint64_t completed, lost, elapsedNs;
+    uint32_t count, stopReason, engine;
+    int32_t executionStatus;
+};
+struct VirtualCpuInstructionRecord {
+    uint64_t sequence, timestampNs, cr3, ip;
+    uint64_t nextIp, rax, rbx, rcx, rdx, rsp, rflags; // post-instruction values
+    uint32_t cpu, cpl;
+};
+static_assert(sizeof(ControlVirtualMachineRequest)==8);
+static_assert(sizeof(ControlVirtualMachineResponse)==8);
+static_assert(sizeof(TraceVirtualCpuRequest)==56);
+static_assert(sizeof(TraceVirtualCpuResponse)==48);
+static_assert(sizeof(VirtualCpuInstructionRecord)==96);
 
 // --- Backend capabilities ---
 // The same protocol is served by the in-process VEH DLL and by out-of-process

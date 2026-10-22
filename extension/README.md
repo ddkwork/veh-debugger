@@ -140,3 +140,13 @@ veh-debug-adapter.exe           veh-mcp-server.exe
 ## License
 
 MIT
+
+
+`veh_virtual_machine(operation="status"|"pause"|"resume"|"trace")` provides
+explicit VM-wide control when the backend advertises it. Trace executes one
+selected vCPU while the VM remains paused, with CR3/CPL/RIP stop boundaries,
+an instruction/time budget, interpreter identification and explicit lost records.
+This scope is independent of the attached guest PID. It does not provide a
+selective OS-thread stop. The tool is available through `veh_toolbox` discovery
+and manual calls; batch/capture setup/breakpoint actions intentionally exclude
+it because their process-scoped automation must not resume the entire VM.

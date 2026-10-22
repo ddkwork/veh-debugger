@@ -330,6 +330,7 @@ The table below documents the complete public tool surface. Treat the running se
 | Tool | Args | Description |
 |------|------|-------------|
 | `veh_toolbox` | `operation, tool?, arguments?, profile?, query?, schema_handle?` | Lazy gateway for tools not eager in the active profile. Search, describe, and call tools; reuse a `describe` response's `schema_handle` for a short unchanged check. |
+| `veh_virtual_machine` | `operation, cpu?, max_instructions?, duration_ms?, cpl_mask?, cr3_roots?, rip_begin?, rip_end?` | Explicit whole-VM control and paused-vCPU trace; manual calls only |
 | `veh_attach` | `pid, backend?/agent?, agent_args?, target_scope?` | VEH injection or external backend attach; guest PIDs require guest scope and backend validation |
 | `veh_launch` | `program, args?, stopOnEntry?, cwd?, env?, backend?/agent?, target_scope?` | Create/attach a host process with optional cwd/env; guest launch/stopOnEntry rejects and preserves an existing session |
 | `veh_detach` | - | Detach debugger (target keeps running) |
@@ -482,3 +483,13 @@ Supported injection methods (auto-selected):
 ## License
 
 MIT License
+
+
+`veh_virtual_machine(operation="status"|"pause"|"resume"|"trace")` provides
+explicit VM-wide control when the backend advertises it. Trace executes one
+selected vCPU while the VM remains paused, with CR3/CPL/RIP stop boundaries,
+an instruction/time budget, interpreter identification and explicit lost records.
+This scope is independent of the attached guest PID. It does not provide a
+selective OS-thread stop. The tool is available through `veh_toolbox` discovery
+and manual calls; batch/capture setup/breakpoint actions intentionally exclude
+it because their process-scoped automation must not resume the entire VM.

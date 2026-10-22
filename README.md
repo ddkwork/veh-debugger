@@ -345,6 +345,7 @@ DAP의 게스트 연결 설정은 추가하지 않습니다. 실행 중 서버�
 | 도구 | 인자 | 설명 |
 |------|------|------|
 | `veh_toolbox` | `operation, tool?, arguments?, profile?, query?, schema_handle?` | 현재 프로필에 eager 노출되지 않은 도구를 검색·설명·호출하는 lazy gateway. `describe`가 반환한 `schema_handle`을 재사용하면 변경 없음만 짧게 확인한다. |
+| `veh_virtual_machine` | `operation, cpu?, max_instructions?, duration_ms?, cpl_mask?, cr3_roots?, rip_begin?, rip_end?` | 명시적 VM 전체 제어·정지 상태 vCPU 트레이스. 수동 호출 전용 |
 | `veh_attach` | `pid, backend?/agent?, agent_args?, target_scope?` | VEH 주입 또는 외부 백엔드 연결. VM PID는 `target_scope="guest"`와 백엔드 검증 필요 |
 | `veh_launch` | `program, args?, stopOnEntry?, cwd?, env?, backend?/agent?, target_scope?` | 호스트 프로세스 생성·연결. `cwd`/`env` 지원. 게스트 launch/stopOnEntry는 미지원이며 기존 세션을 보존하고 거부 |
 | `veh_detach` | - | 디버거 분리 (타겟은 계속 실행) |
@@ -552,3 +553,12 @@ Windows 디버거의 "실행하며 디버깅" 기능과 동일. DAP(`launch` 요
 ## 라이선스
 
 MIT License
+
+
+백엔드가 지원하면 `veh_virtual_machine(operation="status"|"pause"|"resume"|"trace")`로
+VM 전체 상태 조회·정지·재개와 제한된 가상 CPU 트레이스를 요청할 수 있습니다.
+트레이스는 다른 CPU가 멈춘 상태에서 선택한 CPU만 실행하며 CR3/CPL/RIP 경계,
+실행·시간 한도, 인터프리터 엔진과 손실 개수를 보고합니다. 연결한 게스트 PID와
+별개로 VM 전체에 영향을 줍니다. 선택한 OS 스레드만 정지시키는 기능은 아닙니다.
+`veh_toolbox`에서 설명을 조회하고 수동 호출할 수 있습니다. 프로세스 범위 자동화가
+VM 전체를 재개하지 않도록 batch·capture setup·브레이크포인트 actions에서는 제외합니다.

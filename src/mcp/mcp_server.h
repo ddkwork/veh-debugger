@@ -104,6 +104,7 @@ private:
 	json ToolToolbox(const json& args);
 	// System inspection (tools_system.cpp)
 	json ToolSystemMemory(const json& args);
+	json ToolVirtualMachine(const json& args);
 	json ToolTranslate(const json& args);
 	json ToolMsr(const json& args);
 	json ToolCpuid(const json& args);

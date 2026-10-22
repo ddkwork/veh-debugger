@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- **Explicit VM control and vCPU instruction trace (MCP)** -- `veh_virtual_machine` uses versioned backend IPC for whole-VM status/pause/resume and one bounded paused-vCPU interpreter batch. CR3/CPL/RIP boundaries stop before execution; returned records retain exact timestamps and completion/loss counts, including partial failures. It is independent of the guest PID and does not imply selective thread stops. Manual/toolbox calls are supported; process-scoped batch/capture/actions intentionally exclude VM-wide execution.
 - **External guest attachment (MCP)** -- `veh_attach` accepts `target_scope="guest"` directly or through a registered backend. The backend validates PID and 32/64-bit metadata, without opening or monitoring the same numeric host PID. Agent reuse checks executable, arguments and scope. Guest process discovery and guest launch/stopOnEntry remain unsupported.
 
 ### Fixed

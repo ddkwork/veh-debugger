@@ -34,6 +34,7 @@ void PrintUsage() {
         "  Register names in veh-backends.json beside this executable, or VEH_BACKENDS.\n"
         "  target_scope=guest uses a guest PID and backend-validated address width.\n"
         "  Guest launch/stopOnEntry is unsupported; inspect backend.unsupported.\n"
+        "  VM-wide control/paused-vCPU trace: veh_virtual_machine (backend support required).\n"
         "  Tool help: veh_toolbox(operation=describe, tool=veh_attach or veh_launch).\n"
         "\n"
 		"This server communicates via stdin/stdout using MCP (JSON-RPC 2.0).\n"
