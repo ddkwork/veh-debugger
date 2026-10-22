@@ -31,7 +31,8 @@ public:
 		InjectionMethod method = InjectionMethod::Auto,
 		std::string* error = nullptr);
 
-	// 프로세스 생성 + 인젝션 (메인 스레드는 suspended 상태 유지)
+	// 프로세스 생성 + 인젝션 (메인 스레드는 suspended 상태 유지). dllPath가 비면 생성만
+	// (외부 백엔드: 대상에 아무것도 넣지 않는다).
 	// env: 자식 프로세스에 추가할 환경변수 목록 ("KEY=VALUE" 형식).
 	//      부모 환경을 상속한 위에 덮어씀 (헤드리스 프로세스 설정용).
 	static LaunchResult LaunchAndInject(

@@ -1083,6 +1083,9 @@ std::vector<McpServer::ToolDef> McpServer::BuildAllToolsList() {
 			{"stopOnEntry", {{"type", "boolean"}, {"description", "Stop at entry point (default: true)"}}},
 			{"runAsInvoker", {{"type", "boolean"}, {"description", "Bypass UAC elevation prompt by setting __COMPAT_LAYER=RunAsInvoker (default: false)"}}},
 			{"injectionMethod", {{"type", "string"}, {"enum", json::array({"auto", "createRemoteThread", "ntCreateThreadEx", "threadHijack", "queueUserApc"})}, {"description", "DLL injection method (default: auto). Auto tries all methods in order."}}},
+			{"backend", {{"type", "string"}, {"description", "veh (default): inject the VEH DLL. Any other name: an out-of-process agent registered in veh-backends.json; the process is created suspended and nothing is injected (stopOnEntry keeps the main thread suspended before the loader runs)."}}},
+			{"agent", {{"type", "string"}, {"description", "Path of an out-of-process agent to use instead of a registered backend name."}}},
+			{"agent_args", {{"type", "array"}, {"items", {{"type", "string"}}}, {"description", "Extra arguments for agent."}}},
 			{"logFile", {{"type", "string"}, {"description", "Enable server-side logging to this file path (e.g. 'veh-mcp.log'). Omit to disable logging."}}}
 		 }}, {"required", json::array({"program"})}}}}),
 

@@ -966,7 +966,7 @@ LaunchResult Injector::LaunchAndInject(
 		pi.dwProcessId, pi.dwThreadId);
 
 	std::string injectionError;
-	if (!InjectDll(pi.dwProcessId, dllPath, method, &injectionError)) {
+	if (!dllPath.empty() && !InjectDll(pi.dwProcessId, dllPath, method, &injectionError)) {
 		LOG_ERROR("DLL injection failed for '%s', terminating process %u", dllPath.c_str(), pi.dwProcessId);
 		TerminateProcess(pi.hProcess, 1);
 		CloseHandle(pi.hThread);

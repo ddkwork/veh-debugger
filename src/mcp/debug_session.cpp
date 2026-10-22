@@ -290,8 +290,9 @@ DebugSession::LaunchResult DebugSession::Launch(const LaunchOptions& opts) {
 		}
 	}
 
-	std::string dllPath = GetDllPathForExe(opts.program);
-	if (dllPath.empty()) {
+	// An external backend serves the process from outside: create it suspended, nothing injected.
+	std::string dllPath = opts.agent ? std::string() : GetDllPathForExe(opts.program);
+	if (!opts.agent && dllPath.empty()) {
 		result.error = "VEH DLL not found";
 		return result;
 	}
@@ -334,6 +335,31 @@ DebugSession::LaunchResult DebugSession::Launch(const LaunchOptions& opts) {
 
 	launchedMainThreadId_ = lr.mainThreadId;
 	mainThreadResumed_ = false;
+
+	if (opts.agent) {
+		// The agent serves a suspended process (no loader run yet); the main
+		// thread stays suspended until resumed, as with the DLL.
+		if (!ConnectExternalAgent(lr.pid, *opts.agent)) {
+			if (HANDLE p = OpenProcess(PROCESS_TERMINATE, FALSE, lr.pid)) {
+				TerminateProcess(p, 1);
+				CloseHandle(p);
+			}
+			launchedMainThreadId_ = 0;
+			result.error = lastAttachError_.empty() ? "External backend did not come up" : lastAttachError_;
+			return result;
+		}
+		FinishAttach(lr.pid);
+		// Ours: ended with the session (FinishAttach opened it for monitoring only).
+		if (HANDLE own = OpenProcess(PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE | PROCESS_VM_READ,
+				FALSE, lr.pid)) {
+			if (targetProcess_) CloseHandle(targetProcess_);
+			targetProcess_ = own;
+		}
+		launchedByUs_ = true;
+		result.ok = true;
+		result.pid = lr.pid;
+		return result;
+	}
 
 	// VM_READ: 조건부 BP 값 평가용(위 Attach 주석 참조). 우리가 만든 자식이라 항상 성공.
 	targetProcess_ = OpenProcess(PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, FALSE, lr.pid);

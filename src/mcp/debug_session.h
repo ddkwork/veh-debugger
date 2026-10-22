@@ -173,6 +173,7 @@ public:
 		bool runAsInvoker = false;
 		std::string injectionMethod = "auto";
 		std::string cwd;                // 작업 디렉토리; 빈 값이면 디버거의 cwd 상속
+		const ExternalAgent* agent = nullptr; // out-of-process backend: nothing is injected
 	};
 	struct LaunchResult {
 		bool ok = false;

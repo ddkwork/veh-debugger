@@ -194,6 +194,10 @@ json McpServer::ToolLaunch(const json& args) {
 	opts.runAsInvoker = JsonBool(args, "runAsInvoker", false);
 	opts.injectionMethod = args.value("injectionMethod", "auto");
 	opts.cwd = args.value("cwd", "");
+	std::optional<DebugSession::ExternalAgent> agent;
+	if (std::string error; !ResolveBackend(args, agent, error))
+		return {{"error", error}};
+	opts.agent = agent ? &*agent : nullptr;
 
 	auto result = session_.Launch(opts);
 	if (!result.ok) {
@@ -209,6 +213,7 @@ json McpServer::ToolLaunch(const json& args) {
 	if (!session_.GetPipeClient().WaitForReady(3000)) {
 		LOG_WARN("No Ready after attach/launch; proceeding (VEH may not be installed yet)");
 	}
+	session_.QueryBackendInfo();
 	session_.StartProcessMonitor();
 
 	// stopOnEntry=false: VEH 설치 완료(WaitForReady) 이후에야 메인스레드를 재개한다.
@@ -219,6 +224,7 @@ json McpServer::ToolLaunch(const json& args) {
 
 	json ret = {{"success", true}, {"pid", result.pid}, {"message",
 		opts.stopOnEntry ? "Launched and attached (stopped on entry)" : "Launched and attached"}};
+	ret["backend"] = BackendSummary(session_.GetBackendInfo());
 	auto modules = session_.GetModules();
 	if (!modules.empty()) {
 		char buf[20]; snprintf(buf, sizeof(buf), "0x%llX", modules[0].baseAddress);
