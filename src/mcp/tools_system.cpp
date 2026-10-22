@@ -577,7 +577,8 @@ json McpServer::ToolAddressSpace(const json& args) {
 namespace {
 
 const char* const kEventNames[] = { "", "cpuid", "msr_read", "msr_write", "exception", "port_in", "port_out", "syscall",
-	"hypercall", "xsetbv", "rdtsc", "memory_read", "memory_write", "memory_execute" };
+	"hypercall", "xsetbv", "rdtsc", "memory_read", "memory_write", "memory_execute", "dr_access", "sysret",
+	"interrupt" };
 
 uint32_t EventTypeOf(const std::string& name) {
 	for (uint32_t i = 1; i < sizeof(kEventNames) / sizeof(kEventNames[0]); ++i)
@@ -602,7 +603,7 @@ json McpServer::ToolEvent(const json& args) {
 	if (op == "add") {
 		AddSystemEventRequest req{};
 		req.type = EventTypeOf(args.value("type", ""));
-		if (!req.type) return {{"error", "type: cpuid, msr_read, msr_write, exception, port_in, port_out, syscall, hypercall, xsetbv, rdtsc, memory_read, memory_write, memory_execute"}};
+		if (!req.type) return {{"error", "type: cpuid, msr_read, msr_write, exception, port_in, port_out, syscall, sysret, hypercall, xsetbv, rdtsc, dr_access, interrupt, memory_read, memory_write, memory_execute"}};
 		req.action = args.value("action", "record") == "stop" ? 1u : 0u;
 		req.pid = JsonUint32(args, "pid", 0);
 		req.tid = JsonUint32(args, "tid", 0);

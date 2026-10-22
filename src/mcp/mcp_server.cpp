@@ -1492,10 +1492,10 @@ std::vector<McpServer::ToolDef> McpServer::BuildAllToolsList() {
 			 }}}}}),
 
 		Tool(&McpServer::ToolEvent, "system", 0, true,
-			{{"name", "veh_event"}, {"description", "Machine-wide events (like HyperDbg !cpuid/!msrread/!msrwrite/!exception/!ioin/!ioout/!syscall/!vmcall/!xsetbv/!tsc/!monitor): add, remove, list. Every match is recorded with registers (veh_event_records); action=stop also halts the machine for a connected kernel debugger (veh_kd_*). The guest sees nothing. Needs a hypervisor backend."},
+			{{"name", "veh_event"}, {"description", "Machine-wide events (like HyperDbg !cpuid/!msrread/!msrwrite/!exception/!interrupt/!ioin/!ioout/!syscall/!sysret/!vmcall/!xsetbv/!tsc/!dr/!monitor): add, remove, list. Every match is recorded with registers (veh_event_records); action=stop also halts the machine for a connected kernel debugger (veh_kd_*). The guest sees nothing. Needs a hypervisor backend."},
 			 {"inputSchema", {{"type", "object"}, {"properties", {
 				{"operation", {{"type", "string"}, {"enum", json::array({"add", "remove", "list"})}, {"description", "Default: list"}}},
-				{"type", {{"type", "string"}, {"enum", json::array({"cpuid", "msr_read", "msr_write", "exception", "port_in", "port_out", "syscall", "hypercall", "xsetbv", "rdtsc", "memory_read", "memory_write", "memory_execute"})}}},
+				{"type", {{"type", "string"}, {"enum", json::array({"cpuid", "msr_read", "msr_write", "exception", "port_in", "port_out", "syscall", "sysret", "hypercall", "xsetbv", "rdtsc", "dr_access", "interrupt", "memory_read", "memory_write", "memory_execute"})}}},
 				{"value", {{"type", "string"}, {"description", "Exact value: CPUID leaf, MSR index, exception vector, port, system call number"}}},
 				{"low", {{"type", "string"}, {"description", "Value range start (inclusive)"}}},
 				{"high", {{"type", "string"}, {"description", "Value range end (inclusive)"}}},
@@ -1541,8 +1541,8 @@ std::vector<McpServer::ToolDef> McpServer::BuildAllToolsList() {
 		Tool(&McpServer::ToolKdConnect, "kernel", 0, false,
 			{{"name", "veh_kd_connect"}, {"description", "Connect to a halting kernel debugger stub that speaks the GDB remote serial protocol (a hypervisor stub, a VM's gdbstub). Connecting halts every CPU of the target machine. Transports: pipe (e.g. a VM's COM port mapped to a host named pipe), com (serial port), tcp."},
 			 {"inputSchema", {{"type", "object"}, {"properties", {
-				{"transport", {{"type", "string"}, {"enum", json::array({"pipe", "com", "tcp"})}, {"description", "Default: pipe"}}},
-				{"address", {{"type", "string"}, {"description", "\\\\.\\pipe\\name, COM1, or host:port"}}},
+				{"transport", {{"type", "string"}, {"enum", json::array({"pipe", "com", "tcp", "udp"})}, {"description", "Default: pipe"}}},
+				{"address", {{"type", "string"}, {"description", "\\\\.\\pipe\\name, COM1, host:port (tcp), or ip:port (udp: the stub on a NIC reserved for it)"}}},
 				{"baud", {{"type", "integer"}, {"description", "com: default 115200"}}}
 			 }}, {"required", json::array({"address"})}}}}),
 		Tool(&McpServer::ToolKdDisconnect, "kernel", 0, false,

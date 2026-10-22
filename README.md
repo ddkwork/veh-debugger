@@ -376,7 +376,7 @@ enabled = true
 
 | 도구 | 주요 인자 | 설명 |
 |------|-----------|------|
-| `veh_event` | `operation, type, value?/low?/high?, address?, size?, pid?, tid?, cpu?, mode?, action?` | 머신 전체 이벤트: `cpuid`, `msr_read`/`msr_write`, `exception`, `port_in`/`port_out`, `syscall`, `hypercall`, `xsetbv`, `rdtsc`, `memory_read`/`memory_write`/`memory_execute`. 조건(pid/tid/CPU/커널·유저/값 범위)에 맞으면 레지스터와 함께 기록. 가로챈 명령은 그대로 한 번 실제 실행되므로 대상은 차이를 보지 못한다. `action=stop`은 커널 디버거가 연결돼 있으면 머신 전체를 정지 |
+| `veh_event` | `operation, type, value?/low?/high?, address?, size?, pid?, tid?, cpu?, mode?, action?` | 머신 전체 이벤트: `cpuid`, `msr_read`/`msr_write`, `exception`, `port_in`/`port_out`, `syscall`/`sysret`, `hypercall`, `xsetbv`, `rdtsc`, `dr_access`(디버그 레지스터 접근), `interrupt`(외부 인터럽트, 기록 뒤 그대로 전달), `memory_read`/`memory_write`/`memory_execute`. 조건(pid/tid/CPU/커널·유저/값 범위)에 맞으면 레지스터와 함께 기록. 가로챈 명령은 그대로 한 번 실제 실행되므로 대상은 차이를 보지 못한다. `action=stop`은 커널 디버거가 연결돼 있으면 머신 전체를 정지 |
 | `veh_event_records` | `max?, registers?` | 이벤트 기록 가져오기 (CPU, 프로세스/스레드, 모드, 값, rip/rsp/cr3, 타임스탬프) |
 | `veh_branch_trace` | `operation, kind?, threadId?, buffer_kb?, max?` | 하드웨어 분기 기록 공통 인터페이스: `last`(LBR: 스레드가 멈추기 직전 분기들), `full`(Intel PT: 대상 프로세스의 전체 실행 경로를 분기 목록으로 복원). `status`는 이 기계에서 무엇을 쓸 수 있는지, 못 쓰면 이유(제조사, 하위 하이퍼바이저 미노출, 비활성)와 대안을 알려준다 |
 | `veh_hidden_hook` | `operation, address, pid?, set?, return?, pop?` | 숨은 실행 훅: 주소가 실행될 때 레지스터를 바꾸거나(`set`) 함수를 즉시 반환값과 함께 돌려보냄(`return`, stdcall은 `pop`). 코드 바이트는 그대로, 스레드도 멈추지 않음. `pid` 생략 시 커널 주소 |
@@ -385,7 +385,7 @@ enabled = true
 
 | 도구 | 주요 인자 | 설명 |
 |------|-----------|------|
-| `veh_kd_connect` | `transport, address, baud?` | `pipe`(VM의 COM 포트를 연결한 호스트 named pipe), `com`, `tcp`. 연결하면 대상 머신의 모든 CPU가 정지 |
+| `veh_kd_connect` | `transport, address, baud?` | `pipe`(VM의 COM 포트를 연결한 호스트 named pipe), `com`, `tcp`, `udp`(디버거 전용 NIC, `ip:port`, 유실·재정렬은 재전송으로 복구). 연결하면 대상 머신의 모든 CPU가 정지 |
 | `veh_kd_continue` / `veh_kd_wait` / `veh_kd_break` | `wait?, timeout_ms?` | 재개, 다음 정지(브레이크포인트)까지 대기, 실행 중 정지(break-in) |
 | `veh_kd_step` | `cpu?, count?` | 한 CPU만 한 명령씩 실행 (나머지 CPU는 정지 유지) |
 | `veh_kd_registers` / `veh_kd_set_register` | `cpu?, name, value` | 정지한 CPU의 레지스터 (스텁이 주면 cr3, GS/FS base, IDT, CPL 포함) |

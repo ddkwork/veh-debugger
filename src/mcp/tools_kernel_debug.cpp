@@ -106,7 +106,7 @@ json McpServer::ToolKdConnect(const json& args)
 	const std::string transport = args.value("transport", "pipe");
 	const std::string address = args.value("address", "");
 	if (address.empty())
-		return {{"error", "address required (pipe name, COM port, or host:port)"}};
+		return {{"error", "address required (pipe name, COM port, host:port or ip:port)"}};
 	kd_.reset();
 	std::string error;
 	auto link = OpenKdTransport(transport, address, JsonUint32(args, "baud", 115200), &error);

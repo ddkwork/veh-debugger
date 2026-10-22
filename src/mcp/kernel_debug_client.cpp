@@ -98,6 +98,102 @@ private:
 	SOCKET s_;
 };
 
+// UDP to a stub that keeps the byte stream reliable with stop-and-wait:
+// datagram = 'K' 'D' type seq16 payload; DATA is acknowledged by an ACK with
+// the same seq, resent until it is, duplicates acknowledged and dropped.
+class UdpTransport : public KdTransport {
+public:
+	explicit UdpTransport(SOCKET s) : s_(s) {}
+	~UdpTransport() override { closesocket(s_); }
+
+	bool Write(const void* data, size_t size) override
+	{
+		const auto* p = static_cast<const uint8_t*>(data);
+		while (size) {
+			const size_t n = size < 1400 ? size : 1400;
+			if (!SendReliably(p, n))
+				return false;
+			p += n;
+			size -= n;
+		}
+		return true;
+	}
+
+	int Read(uint8_t* buffer, size_t max, uint32_t timeout_ms) override
+	{
+		if (in_.empty())
+			Receive(timeout_ms);
+		const size_t n = in_.size() < max ? in_.size() : max;
+		for (size_t i = 0; i < n; ++i)
+			buffer[i] = in_[i];
+		in_.erase(in_.begin(), in_.begin() + static_cast<std::ptrdiff_t>(n));
+		return static_cast<int>(n);
+	}
+
+private:
+	enum : uint8_t { kData = 1, kAck = 2 };
+
+	void Segment(uint8_t type, uint16_t seq, const uint8_t* data, size_t n)
+	{
+		std::string d = "KD";
+		d += static_cast<char>(type);
+		d += static_cast<char>(seq & 0xFF);
+		d += static_cast<char>(seq >> 8);
+		d.append(reinterpret_cast<const char*>(data), n);
+		send(s_, d.data(), static_cast<int>(d.size()), 0);
+	}
+
+	// One datagram within timeout_ms: DATA is acknowledged and queued, an ACK returned.
+	int Receive(uint32_t timeout_ms)
+	{
+		fd_set set;
+		FD_ZERO(&set);
+		FD_SET(s_, &set);
+		timeval tv = { static_cast<long>(timeout_ms / 1000), static_cast<long>((timeout_ms % 1000) * 1000) };
+		if (select(0, &set, nullptr, nullptr, &tv) <= 0)
+			return -1;
+		char d[2048];
+		const int n = recv(s_, d, sizeof(d), 0);
+		if (n < 5 || d[0] != 'K' || d[1] != 'D')
+			return -1;
+		const uint16_t seq = static_cast<uint16_t>(static_cast<uint8_t>(d[3]) | (static_cast<uint8_t>(d[4]) << 8));
+		if (d[2] == kAck)
+			return seq;
+		if (d[2] != kData)
+			return -1;
+		Segment(kAck, seq, nullptr, 0);
+		if (!synced_) { // the stub's numbering continues across sessions
+			synced_ = true;
+			expect_ = seq;
+		}
+		if (seq == expect_) {
+			++expect_;
+			in_.insert(in_.end(), d + 5, d + n);
+		}
+		return -1;
+	}
+
+	bool SendReliably(const uint8_t* data, size_t n)
+	{
+		for (int attempt = 0; attempt < 40; ++attempt) {
+			Segment(kData, seq_, data, n);
+			const uint64_t end = NowMs() + 150;
+			for (uint64_t now = NowMs(); now < end; now = NowMs())
+				if (Receive(static_cast<uint32_t>(end - now)) == seq_) {
+					++seq_;
+					return true;
+				}
+		}
+		return false;
+	}
+
+	SOCKET s_;
+	uint16_t seq_ = 0;   // the stub restarts its expectation at 0
+	uint16_t expect_ = 0;
+	bool synced_ = false;
+	std::vector<uint8_t> in_;
+};
+
 const char kHex[] = "0123456789abcdef";
 
 } // namespace
@@ -130,6 +226,30 @@ std::unique_ptr<KdTransport> OpenKdTransport(const std::string& kind, const std:
 			return nullptr;
 		}
 		return std::make_unique<ComTransport>(h);
+	}
+	if (kind == "udp") {
+		WSADATA wsa;
+		WSAStartup(MAKEWORD(2, 2), &wsa);
+		const size_t colon = address.rfind(':');
+		if (colon == std::string::npos) {
+			*error = "udp address must be ip:port";
+			return nullptr;
+		}
+		sockaddr_in to = {};
+		to.sin_family = AF_INET;
+		to.sin_port = htons(static_cast<u_short>(std::stoi(address.substr(colon + 1))));
+		if (inet_pton(AF_INET, address.substr(0, colon).c_str(), &to.sin_addr) != 1) {
+			*error = "udp address must be ip:port (IPv4)";
+			return nullptr;
+		}
+		SOCKET s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+		if (s == INVALID_SOCKET || connect(s, reinterpret_cast<sockaddr*>(&to), sizeof(to)) != 0) {
+			*error = "udp socket failed: " + std::to_string(WSAGetLastError());
+			if (s != INVALID_SOCKET)
+				closesocket(s);
+			return nullptr;
+		}
+		return std::make_unique<UdpTransport>(s);
 	}
 	if (kind == "tcp") {
 		WSADATA wsa;

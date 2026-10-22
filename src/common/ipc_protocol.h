@@ -1583,6 +1583,9 @@ enum class SystemEventType : uint32_t {
 	MemoryRead = 11,  // value: address, detail: physical address
 	MemoryWrite = 12,
 	MemoryExecute = 13,
+	DebugRegister = 14, // value: debug register number, detail: 1 write, 0 read
+	SyscallReturn = 15, // value: the status returned (rax), detail: the system call number
+	Interrupt = 16,     // value: vector (delivered to the target as usual afterwards)
 };
 struct AddSystemEventRequest {
 	uint32_t type;      // SystemEventType

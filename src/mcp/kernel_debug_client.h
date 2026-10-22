@@ -18,7 +18,7 @@ public:
 	virtual int Read(uint8_t* buffer, size_t max, uint32_t timeout_ms) = 0;
 };
 
-// "pipe" (\\.\pipe\name), "com" (COM1, baud), "tcp" (host:port).
+// "pipe" (\\.\pipe\name), "com" (COM1, baud), "tcp" (host:port), "udp" (ip:port, stop-and-wait reliable).
 std::unique_ptr<KdTransport> OpenKdTransport(const std::string& kind, const std::string& address, uint32_t baud,
 	std::string* error);
 
