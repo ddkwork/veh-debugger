@@ -84,7 +84,7 @@ Named Pipe (`\\.\pipe\dotnet-diagnostic-{pid}`), binary framed:
 | 0x00FC | GetCapabilities: backend kind, capability flags, per-command support bitmap. An out-of-process server of this protocol is started as `<agent> --pid <pid> --pipe <name>` (`veh_attach` `agent` or a name in `veh-backends.json`) and must be the process serving that pipe; unimplemented commands answer `IpcStatus::Unsupported` |
 
 Guest external sessions use explicit `target_scope=guest` and additive
-`kCapGuestTarget`/`GetTargetInfo` (0x00FD, exact16-byte status/scope/PID/addressBits).
+`kCapGuestTarget`/`GetTargetInfo` (0x00FD, exact 16-byte status/scope/PID/addressBits).
 Guest attach defers host target handles until scope is validated, then uses
 backend-provided bitness without host handles/monitoring. Metadata failure
 rejects attach; guest launch rejects before host creation or session replacement.

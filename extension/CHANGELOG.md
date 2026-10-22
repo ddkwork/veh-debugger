@@ -3,7 +3,7 @@
 ## Unreleased
 
 ### Added
-- **External guest attachment (MCP)** -- `veh_attach` accepts `target_scope="guest"` directly or through a registered backend. The backend validates PID and32/64-bit metadata, without opening or monitoring the same numeric host PID. Agent reuse checks executable, arguments and scope. Guest process discovery and guest launch/stopOnEntry remain unsupported.
+- **External guest attachment (MCP)** -- `veh_attach` accepts `target_scope="guest"` directly or through a registered backend. The backend validates PID and 32/64-bit metadata, without opening or monitoring the same numeric host PID. Agent reuse checks executable, arguments and scope. Guest process discovery and guest launch/stopOnEntry remain unsupported.
 
 ### Fixed
 - **Caller trace duration compatibility** -- `veh_trace_callers` returns both `durationMs` and the legacy `durationSec` field. Whole seconds retain integer values; subsecond windows use fractional seconds without rounding. Both `duration_sec` and `duration_ms` inputs remain supported, with milliseconds taking precedence when both are provided.

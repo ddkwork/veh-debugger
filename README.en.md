@@ -311,7 +311,7 @@ directory. Supply the backend's VM selection/connection arguments in `args`.
 
 Then call `veh_attach(pid=1234, backend="guest-lab")` for an existing guest PID.
 Explicit selection uses `agent`, `agent_args` and `target_scope="guest"`.
-The backend validates guest PID and32/64-bit metadata; guest sessions open no
+The backend validates guest PID and 32/64-bit metadata; guest sessions open no
 host target process handle and install no host PID monitor. Satisfy backend
 prerequisites first, including a paused VM when required. This interface does
 not provide guest process enumeration/selection.
