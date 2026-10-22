@@ -186,6 +186,8 @@ json McpServer::ToolSystemMemory(const json& args) {
 	if (space != "kernel" && space != "physical") return {{"error", "space must be kernel or physical"}};
 	const bool physical = space == "physical";
 	const std::string op = args.value("operation", "read");
+    if(session_.IsVirtualMachineTarget()&&op!="read"&&op!="write")
+        return {{"error","VM memory search/dump requires a backend operation; client memory loops are unavailable"}};
 	uint64_t address = 0;
 	if (!ParseNumber(args, "address", address)) return {{"error", "address is required (hex or decimal)"}};
 	json error;

@@ -1064,15 +1064,15 @@ bool McpServer::ParseAddress(const std::string& addrStr, uint64_t& out) {
 std::vector<McpServer::ToolDef> McpServer::BuildAllToolsList() {
 	std::vector<ToolDef> tools = {
 		Tool(&McpServer::ToolAttach, "session", kLite | kInteractive, false,
-			{{"name", "veh_attach"}, {"description", "Attach by host or guest PID using VEH or an external backend. Replaces the current session. Default VEH requires a running host process. Guest PIDs require an external backend, target_scope=guest, validated PID/width and backend VM prerequisites."},
+			{{"name", "veh_attach"}, {"description", "Attach to a host/guest process or a VM. Host/guest requires pid; target_scope=vm omits pid and requires external VM metadata. Replaces the session after argument validation. Default VEH requires a running host process."},
 		 {"inputSchema", {{"type", "object"}, {"properties", {
-			{"pid", {{"type", "integer"}, {"description", "Process ID in the selected host or guest target scope"}}},
+			{"pid", {{"type", "integer"}, {"description", "Required for host/guest process scope; omit for vm scope"}}},
 			{"backend", {{"type", "string"}, {"description", "veh (default): inject the VEH DLL. Any other name: an out-of-process agent registered in veh-backends.json next to the server (or VEH_BACKENDS); nothing is injected. The response's backend.unsupported lists tool families the backend cannot serve."}}},
-			{"agent", {{"type", "string"}, {"description", "Path of an out-of-process agent to use instead of a registered backend name. Started as: <agent> --pid <pid> --pipe <name> [agent_args]."}}},
-			{"target_scope", {{"type", "string"}, {"enum", json::array({"host", "guest"})}, {"description", "host by default, or registered target_scope. guest requires backend PID/width validation; guest launch is unsupported."}}},
+			{"agent", {{"type", "string"}, {"description", "Path of an out-of-process agent to use instead of a registered backend name. Process agent: --pid <pid> --pipe <name> [agent_args]; VM scope omits --pid."}}},
+			{"target_scope", {{"type", "string"}, {"enum", json::array({"host", "guest", "vm"})}, {"description", "host default or backend scope; guest validates PID/width; vm omits PID. Guest/VM launch unsupported."}}},
 			{"agent_args", {{"type", "array"}, {"items", {{"type", "string"}}}, {"description", "Extra arguments for agent."}}},
 			{"logFile", {{"type", "string"}, {"description", "Enable server-side logging to this file path (e.g. 'veh-mcp.log'). Omit to disable logging."}}}
-		 }}, {"required", json::array({"pid"})}}}}),
+		 }}, {"required", json::array()}}}}),
 
 		Tool(&McpServer::ToolLaunch, "session", kLite | kInteractive | kCapture, false,
 			{{"name", "veh_launch"}, {"description", "Launch and attach a host program through VEH or an external host backend using CREATE_SUSPENDED. Guest launch/stopOnEntry is unsupported; rejection preserves the session and creates no host process."},
@@ -1086,7 +1086,7 @@ std::vector<McpServer::ToolDef> McpServer::BuildAllToolsList() {
 			{"injectionMethod", {{"type", "string"}, {"enum", json::array({"auto", "createRemoteThread", "ntCreateThreadEx", "threadHijack", "queueUserApc"})}, {"description", "DLL injection method (default: auto). Auto tries all methods in order."}}},
 			{"backend", {{"type", "string"}, {"description", "veh (default): inject the VEH DLL. Other names select veh-backends.json (or VEH_BACKENDS). External host backends create the process suspended without injection. Guest backends reject launch; use veh_attach for an existing guest PID."}}},
 			{"agent", {{"type", "string"}, {"description", "Path of an out-of-process agent to use instead of a registered backend name."}}},
-			{"target_scope", {{"type", "string"}, {"enum", json::array({"host", "guest"})}, {"description", "host by default, or registered target_scope. guest requires backend PID/width validation; guest launch is unsupported."}}},
+			{"target_scope", {{"type", "string"}, {"enum", json::array({"host", "guest", "vm"})}, {"description", "host default or backend scope; guest validates PID/width; vm omits PID. Guest/VM launch unsupported."}}},
 			{"agent_args", {{"type", "array"}, {"items", {{"type", "string"}}}, {"description", "Extra arguments for agent."}}},
 			{"logFile", {{"type", "string"}, {"description", "Enable server-side logging to this file path (e.g. 'veh-mcp.log'). Omit to disable logging."}}}
 		 }}, {"required", json::array({"program"})}}}}),

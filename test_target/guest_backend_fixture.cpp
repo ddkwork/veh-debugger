@@ -24,15 +24,16 @@ template<class T> bool reply(HANDLE pipe, uint32_t command, const T& value) { re
 
 int wmain(int argc, wchar_t** argv) {
     std::wstring name, mode;
-    uint32_t pid = 0;
+    uint32_t pid = 0;bool pidProvided=false;
     for (int i = 1; i + 1 < argc; i += 2) {
         const std::wstring option = argv[i];
-        if (option == L"--pid") pid = std::stoul(argv[i + 1]);
+        if (option == L"--pid"){pid = std::stoul(argv[i + 1]);pidProvided=true;}
         else if (option == L"--pipe") name = argv[i + 1];
         else if (option == L"--metadata") mode = argv[i + 1];
     }
-    const bool vmMode=mode.rfind(L"vm",0)==0;uint32_t vmState=2;
-    if (!pid || name.empty()) return 2;
+    const bool machineMode=mode.rfind(L"machine",0)==0;
+    const bool vmMode=mode.rfind(L"vm",0)==0||machineMode;uint32_t vmState=2;
+    if ((!pid&&!machineMode)||name.empty()||(machineMode&&pidProvided)) return 2;
     HANDLE pipe = CreateNamedPipeW(name.c_str(), PIPE_ACCESS_DUPLEX, PIPE_TYPE_BYTE | PIPE_WAIT, 1, 65536, 65536, 0, nullptr);
     if (pipe == INVALID_HANDLE_VALUE) return 3;
     if (!ConnectNamedPipe(pipe, nullptr) && GetLastError() != ERROR_PIPE_CONNECTED) { CloseHandle(pipe); return 4; }
@@ -46,7 +47,8 @@ int wmain(int argc, wchar_t** argv) {
         if (command == veh::IpcCommand::GetCapabilities) {
             veh::GetCapabilitiesResponse caps{};
             caps.status = veh::IpcStatus::Ok; caps.backend = veh::IpcBackend::Hypervisor;
-            caps.flags = veh::kCapNoTargetFootprint | (mode == L"host-cap" ? 0 : veh::kCapGuestTarget);
+            caps.flags = veh::kCapNoTargetFootprint | (mode == L"host-cap" ? 0 : machineMode ? veh::kCapVirtualMachineTarget : veh::kCapGuestTarget);
+            if(mode==L"machine-guest-cap")caps.flags=veh::kCapNoTargetFootprint|veh::kCapGuestTarget;
             for (auto op : {veh::IpcCommand::GetCapabilities, veh::IpcCommand::GetTargetInfo, veh::IpcCommand::GetThreads,
                             veh::IpcCommand::ReadMemory, veh::IpcCommand::Heartbeat, veh::IpcCommand::Detach})
                 veh::SetCommandSupported(caps.commands, op);
@@ -58,11 +60,15 @@ int wmain(int argc, wchar_t** argv) {
             if (!reply(pipe, header.command, caps)) break;
         } else if (command == veh::IpcCommand::GetTargetInfo) {
             veh::GetTargetInfoResponse info{veh::IpcStatus::Ok, veh::IpcTargetScope::Guest, pid, 32};
+            if(machineMode){info.scope=veh::IpcTargetScope::VirtualMachine;info.pid=0;info.addressBits=0;}
+            if(mode==L"machine-wrong-pid")info.pid=1;
+            if(mode==L"machine-bad-width")info.addressBits=64;
+            if(mode==L"machine-wrong-scope")info.scope=veh::IpcTargetScope::Guest;
             if (mode == L"wrong-pid") ++info.pid;
             if (mode == L"bad-width") info.addressBits = 16;
             if (mode == L"wrong-scope") info.scope = veh::IpcTargetScope::Host;
             if (mode == L"not-found") { info = {}; info.status = veh::IpcStatus::NotFound; }
-            if (!send(pipe, header.command, &info, mode == L"truncated" ? 8 : sizeof(info))) break;
+            if (!send(pipe, header.command, &info, (mode == L"truncated"||mode==L"machine-truncated") ? 8 : sizeof(info))) break;
         } else if (command == veh::IpcCommand::GetThreads) {
             struct { veh::GetThreadsResponse header; veh::ThreadInfo thread; } threads{};
             threads.header.status = veh::IpcStatus::Ok; threads.header.count = 1; threads.thread.id = 77;

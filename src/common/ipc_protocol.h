@@ -1761,12 +1761,15 @@ constexpr uint32_t kCapExecWriteTracking   = 1u << 3;  // writes to executed cod
 // A guest PID must never be passed to host process/thread APIs. Backends validate
 // the bound process identity on every query; failure publishes no metadata.
 constexpr uint32_t kCapGuestTarget = 1u << 4;
-enum class IpcTargetScope : uint32_t { Host = 0, Guest = 1 };
+// A VM session has no OS PID and no single address width. Both metadata fields
+// must be zero; clients must explicitly opt into vm scope before connecting.
+constexpr uint32_t kCapVirtualMachineTarget = 1u << 5;
+enum class IpcTargetScope : uint32_t { Host = 0, Guest = 1, VirtualMachine = 2 };
 struct GetTargetInfoResponse {
     IpcStatus status;
     IpcTargetScope scope;
     uint32_t pid;
-    uint32_t addressBits; // exactly 32 or 64 on success
+    uint32_t addressBits; // Guest:32/64; VirtualMachine:0 with pid0
 };
 static_assert(sizeof(GetTargetInfoResponse) == 16);
 

@@ -150,6 +150,7 @@ public:
 		std::string path;
 		std::vector<std::string> args; // appended after --pid/--pipe
 		bool guestTarget = false; // guest PIDs/paths never name host objects
+        bool vmTarget = false; // VM sessions omit --pid and have no OS target
 	};
 	// nullptr agent: inject the VEH DLL. Otherwise start or reuse that agent.
 	bool Attach(uint32_t pid, const ExternalAgent* agent = nullptr);
@@ -167,6 +168,7 @@ public:
 	void QueryBackendInfo();   // after Ready
     bool CompleteBackendAttach(); // after Ready/capabilities, before reporting success
     bool IsGuestTarget() const { return guestTarget_; }
+    bool IsVirtualMachineTarget() const { return vmTarget_; }
     uint32_t TargetAddressBits() const { return targetAddressBits_; }
 	const BackendInfo& GetBackendInfo() const { return backendInfo_; }
 	struct LaunchOptions {
@@ -502,6 +504,7 @@ private:
 		uint32_t processId;
 		std::vector<std::string> args;
 		bool guestTarget;
+        bool vmTarget;
 	};
 	std::map<uint32_t, RunningAgent> externalAgents_; // target pid -> agent we started
 	BackendInfo backendInfo_;
@@ -514,6 +517,7 @@ private:
 	uint32_t targetPid_ = 0;
 	HANDLE targetProcess_ = nullptr;
 	bool guestTarget_ = false;
+    bool vmTarget_ = false;
 	bool externalAttachPending_ = false;
 	uint32_t targetAddressBits_ = 0;
 	std::string lastAttachError_;   // categorized reason for the last Attach() failure

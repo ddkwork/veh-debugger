@@ -562,3 +562,13 @@ VM 전체 상태 조회·정지·재개와 제한된 가상 CPU 트레이스를 
 별개로 VM 전체에 영향을 줍니다. 선택한 OS 스레드만 정지시키는 기능은 아닙니다.
 `veh_toolbox`에서 설명을 조회하고 수동 호출할 수 있습니다. 프로세스 범위 자동화가
 VM 전체를 재개하지 않도록 batch·capture setup·브레이크포인트 actions에서는 제외합니다.
+
+
+VM 자체에 연결할 때는 외부 백엔드를 VM 범위로 등록한 뒤
+`veh_attach(target_scope="vm", backend="machine")`을 호출하고 `pid`는 생략합니다.
+백엔드는 PID0/addressBits0인 VM 메타데이터를 확인해 줘야 합니다. VM 세션에는
+호스트 대상 프로세스·OS 스레드 ID·단일 프로세스 주소 폭이 없습니다. VM agent는
+`--pipe`와 설정 인자를 받고, 프로세스 agent에만 `--pid`도 전달됩니다.
+`veh_virtual_machine`으로 VM 전체 제어와 제한된 가상 CPU 기록을 요청합니다.
+물리 메모리 읽기·쓰기는 capability에 따라 제공하며 VM 범위 검색·덤프는 미지원입니다.
+게스트 프로세스에 연결하는 기존 `target_scope="guest"`는 검증된 비영 PID를 사용합니다.

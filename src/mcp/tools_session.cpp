@@ -59,24 +59,24 @@ bool ResolveBackend(const json& args, std::optional<DebugSession::ExternalAgent>
 				if (s.is_string()) v.push_back(s.get<std::string>());
 		return v;
 	};
-    auto scope = [&](const json& defaults, bool& guest) {
+    auto scope = [&](const json& defaults, bool& guest, bool& vm) {
         const json value = args.contains("target_scope") ? args["target_scope"] : defaults.value("target_scope", json("host"));
-        if (!value.is_string() || (value != "host" && value != "guest")) {
-            error = "target_scope must be host or guest";
+        if (!value.is_string() || (value != "host" && value != "guest" && value != "vm")) {
+            error = "target_scope must be host, guest or vm";
             return false;
         }
-        guest = value == "guest";
+        guest = value == "guest";vm = value == "vm";
         return true;
     };
 	if (args.contains("agent") && args["agent"].is_string()) {
 		out = DebugSession::ExternalAgent{args["agent"].get<std::string>(), strings(args.value("agent_args", json::array()))};
-		return scope(json::object(), out->guestTarget);
+		return scope(json::object(), out->guestTarget, out->vmTarget);
 	}
 	const std::string name = args.value("backend", "veh");
 	if (name == "veh") {
-        bool guest = false;
-        if (!scope(json::object(), guest)) return false;
-        if (guest) { error = "target_scope=guest requires an external backend"; return false; }
+        bool guest = false, vm = false;
+        if (!scope(json::object(), guest, vm)) return false;
+        if (guest || vm) { error = "guest/vm target_scope requires an external backend"; return false; }
         return true;
     }
 
@@ -98,7 +98,7 @@ bool ResolveBackend(const json& args, std::optional<DebugSession::ExternalAgent>
 	std::filesystem::path path = table[name]["path"].get<std::string>();
 	if (path.is_relative()) path = file.parent_path() / path;
 	out = DebugSession::ExternalAgent{path.string(), strings(table[name].value("args", json::array()))};
-	return scope(table[name], out->guestTarget);
+	return scope(table[name], out->guestTarget, out->vmTarget);
 }
 
 json BackendSummary(const DebugSession::BackendInfo& info) {
@@ -107,7 +107,7 @@ json BackendSummary(const DebugSession::BackendInfo& info) {
 		{"stopsThreads", (info.flags & kCapStopsThreads) != 0},
 		{"hiddenBreakpoints", (info.flags & kCapHiddenBreakpoints) != 0},
 		{"noTargetFootprint", (info.flags & kCapNoTargetFootprint) != 0},
-		{"targetScope", (info.flags & kCapGuestTarget) ? "guest" : "host"}};
+		{"targetScope", (info.flags & kCapVirtualMachineTarget) ? "vm" : (info.flags & kCapGuestTarget) ? "guest" : "host"}};
 	json missing = json::array();
 	for (const auto& c : kOptionalCommands)
 		if (!info.Supports(c.cmd)) missing.push_back(c.name);
@@ -122,6 +122,12 @@ json McpServer::ToolAttach(const json& args) {
 		std::string lf = args["logFile"].get<std::string>();
 		if (!lf.empty()) veh::Logger::Instance().SetFile(lf);
 	}
+    uint32_t pid=JsonUint32(args,"pid");
+    std::optional<DebugSession::ExternalAgent> agent;
+    if(std::string error;!ResolveBackend(args,agent,error))return {{"error",error}};
+    const bool vm=agent&&agent->vmTarget;
+    if(vm&&pid)return {{"error","VM attachment has no OS PID; omit pid"}};
+    if(!vm&&!pid)return {{"error","pid is required for host/guest attachment"}};
 	if (session_.IsAttached()) {
 		LOG_INFO("Auto-detaching from previous session (pid=%u) before new attach", session_.GetTargetPid());
 		ToolDetach({});
@@ -132,11 +138,6 @@ json McpServer::ToolAttach(const json& args) {
 		session_.GetPipeClient().Disconnect();
 	}
 
-	uint32_t pid = JsonUint32(args, "pid");
-	if (pid == 0) return {{"error", "pid is required"}};
-	std::optional<DebugSession::ExternalAgent> agent;
-	if (std::string error; !ResolveBackend(args, agent, error))
-		return {{"error", error}};
 
 	if (!session_.Attach(pid, agent ? &*agent : nullptr)) {
 		std::string why = session_.LastAttachError();
@@ -161,11 +162,12 @@ json McpServer::ToolAttach(const json& args) {
     }
 	session_.StartProcessMonitor();
 
-	json ret = {{"success", true}, {"pid", pid}, {"message", "Attached to process"}};
+	json ret={{"success",true},{"message",vm?"Attached to virtual machine":"Attached to process"}};
+    if(!vm)ret["pid"]=pid;
 	ret["backend"] = BackendSummary(session_.GetBackendInfo());
 	if (session_.IsGuestTarget()) ret["addressBits"] = session_.TargetAddressBits();
 	// Include main module info (saves a veh_modules round-trip)
-	auto modules = session_.GetModules();
+	auto modules = vm ? std::vector<ModuleEntry>{} : session_.GetModules();
 	if (!modules.empty()) {
 		char buf[20]; snprintf(buf, sizeof(buf), "0x%llX", modules[0].baseAddress);
 		ret["mainModule"] = {{"name", modules[0].name}, {"baseAddress", buf}, {"size", modules[0].size}};
@@ -181,6 +183,8 @@ json McpServer::ToolLaunch(const json& args) {
 	std::optional<DebugSession::ExternalAgent> agent;
 	if (std::string error; !ResolveBackend(args, agent, error))
 		return {{"error", error}};
+    if(agent&&agent->vmTarget)
+        return {{"error","VM attachment does not create a process. Use veh_attach with target_scope=vm."}};
     if (agent && agent->guestTarget)
         return {{"error", "Guest process launch is not supported yet. Start the program in the guest and attach with target_scope=guest."}};
 	if (session_.IsAttached()) {

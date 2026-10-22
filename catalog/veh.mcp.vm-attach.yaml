@@ -1,0 +1,14 @@
+id: veh.mcp.vm-attach
+revision: 1
+summary: Verify explicit no-PID VM attachment and metadata validation against a synthetic host fixture
+tags: [mcp, integration, vm]
+execution:
+  kind: cli
+  executable_ref: py
+  cwd: .
+  argv_template: [-3, -B, test/test_vm_attach.py]
+  trusted_for_run: true
+  timeout_sec: 60
+  artifact_mode: metadata
+docs: [docs/DEVELOPMENT_TOOLS.md]
+cache_policy: disabled

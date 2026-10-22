@@ -493,3 +493,14 @@ This scope is independent of the attached guest PID. It does not provide a
 selective OS-thread stop. The tool is available through `veh_toolbox` discovery
 and manual calls; batch/capture setup/breakpoint actions intentionally exclude
 it because their process-scoped automation must not resume the entire VM.
+
+
+VM attachment uses `veh_attach(target_scope="vm", backend="machine")`, with
+an external backend registered for that scope, and no `pid`. The backend must
+declare VM metadata with PID0/addressBits0. This session has no host process
+target, OS thread identity or single process address width. VM agents receive
+`--pipe` and configured arguments; process agents also receive `--pid`.
+Use `veh_virtual_machine` for explicit whole-VM control and bounded vCPU records.
+Physical memory read/write is available when advertised; search/dump needs a
+server operation and is unavailable in VM scope. Guest process attachment still
+uses `target_scope="guest"` and a validated nonzero guest PID.

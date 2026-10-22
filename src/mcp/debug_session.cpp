@@ -122,7 +122,7 @@ bool DebugSession::ConnectExternalAgent(uint32_t pid, const ExternalAgent& agent
 		const bool alive = h && WaitForSingleObject(h, 0) == WAIT_TIMEOUT;
 		if (h) CloseHandle(h);
 		if (!alive || running->second.path != agent.path || running->second.args != agent.args ||
-            running->second.guestTarget != agent.guestTarget) externalAgents_.erase(running);
+            running->second.guestTarget != agent.guestTarget || running->second.vmTarget != agent.vmTarget) externalAgents_.erase(running);
 	}
 	running = externalAgents_.find(pid);
 	if (running == externalAgents_.end()) {
@@ -130,7 +130,9 @@ bool DebugSession::ConnectExternalAgent(uint32_t pid, const ExternalAgent& agent
 		BCryptGenRandom(nullptr, reinterpret_cast<PUCHAR>(&nonce), sizeof(nonce), BCRYPT_USE_SYSTEM_PREFERRED_RNG);
 		wchar_t pipe[96];
 		swprintf_s(pipe, L"\\\\.\\pipe\\veh-ext-%u-%016llx", pid, static_cast<unsigned long long>(nonce));
-		std::wstring cmd = QuoteArg(Widen(agent.path)) + L" --pid " + std::to_wstring(pid) + L" --pipe " + pipe;
+		std::wstring cmd = QuoteArg(Widen(agent.path));
+        if(!agent.vmTarget)cmd += L" --pid " + std::to_wstring(pid);
+        cmd += L" --pipe " + std::wstring(pipe);
 		for (const auto& a : agent.args) cmd += L" " + QuoteArg(Widen(a));
 		STARTUPINFOW si = {sizeof(si)};
 		PROCESS_INFORMATION pi = {};
@@ -140,7 +142,7 @@ bool DebugSession::ConnectExternalAgent(uint32_t pid, const ExternalAgent& agent
 		}
 		CloseHandle(pi.hThread);
 		CloseHandle(pi.hProcess);
-		running = externalAgents_.emplace(pid, RunningAgent{agent.path, pipe, pi.dwProcessId, agent.args, agent.guestTarget}).first;
+		running = externalAgents_.emplace(pid, RunningAgent{agent.path, pipe, pi.dwProcessId, agent.args, agent.guestTarget, agent.vmTarget}).first;
 	}
 	UseTransport(running->second.pipe);
 	if (!ipcTransport_->Connect(pid, 5000)) {
@@ -174,17 +176,18 @@ void DebugSession::QueryBackendInfo() {
 
 bool DebugSession::Attach(uint32_t pid, const ExternalAgent* agent) {
 	lastAttachError_.clear();
-	if (pid == 0) { lastAttachError_ = "invalid pid (0)"; return false; }
+	if ((!pid && (!agent || !agent->vmTarget)) || (pid && agent && agent->vmTarget)) { lastAttachError_ = "VM scope requires no PID; process scopes require a nonzero PID"; return false; }
 	backendInfo_ = {};
 
 	if (agent) {
 		if (!ConnectExternalAgent(pid, *agent)) return false;
 		guestTarget_ = agent->guestTarget;
+        vmTarget_ = agent->vmTarget;
 		externalAttachPending_ = true;
 		FinishAttach(pid);
 		return true;
 	}
-	guestTarget_ = false;
+	guestTarget_ = false;vmTarget_ = false;
 	externalAttachPending_ = false;
 	UseTransport({});
 
@@ -258,7 +261,7 @@ void DebugSession::FinishAttach(uint32_t pid) {
 	targetPid_ = pid;
 	attached_ = true;
 	// External attach is provisional until the authenticated backend reports scope.
-	if (externalAttachPending_ || guestTarget_) return;
+	if (externalAttachPending_ || guestTarget_ || vmTarget_) return;
 	// VM_READ: 조건부 BP의 [addr]/value 평가가 이벤트 콜백 스레드에서 ReadProcessMemory로
 	// 값을 읽는다(IPC ReadMemory는 콜백 스레드에서 재진입 불가). 실패 시 VM_READ 없이 폴백.
 	targetProcess_ = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE | PROCESS_VM_READ, FALSE, pid);
@@ -283,13 +286,27 @@ void DebugSession::FinishAttach(uint32_t pid) {
 
 bool DebugSession::CompleteBackendAttach() {
     const bool peerGuest = backendInfo_.reported && (backendInfo_.flags & kCapGuestTarget);
+    const bool peerVm = backendInfo_.reported && (backendInfo_.flags & kCapVirtualMachineTarget);
     if (!externalAttachPending_) {
-        if (peerGuest) lastAttachError_ = "Guest backend requires target_scope=guest; guest launch is unsupported.";
-        return !peerGuest;
+        if(peerGuest||peerVm)lastAttachError_="External guest/VM backend requires explicit matching target_scope; launch is unsupported.";
+        return !peerGuest&&!peerVm;
     }
-    if (guestTarget_ != peerGuest) {
-        lastAttachError_ = "External backend target scope mismatch: guest targets require target_scope=guest and guest capabilities.";
+    if (guestTarget_ != peerGuest || vmTarget_ != peerVm || (peerGuest && peerVm)) {
+        lastAttachError_ = "External backend target scope mismatch; select matching host, guest or vm scope.";
         return false;
+    }
+    if(vmTarget_) {
+        std::vector<uint8_t> bytes;GetTargetInfoResponse info{};
+        if(!backendInfo_.Supports(IpcCommand::GetTargetInfo)||
+           !ipcTransport_->SendAndReceive(IpcCommand::GetTargetInfo,nullptr,0,bytes)||bytes.size()!=sizeof(info)) {
+            lastAttachError_="VM backend did not provide complete scope metadata.";return false;
+        }
+        std::memcpy(&info,bytes.data(),sizeof(info));
+        if(info.status!=IpcStatus::Ok||info.scope!=IpcTargetScope::VirtualMachine||info.pid||info.addressBits) {
+            lastAttachError_="VM metadata must declare VM scope, no PID and no process address width.";return false;
+        }
+        targetAddressBits_=0;disassembler_=CreateDisassembler(true); // Pure computation default, not CPU metadata.
+        externalAttachPending_=false;return true; // No host target handle or process monitor.
     }
     if (guestTarget_) {
         std::vector<uint8_t> bytes;
@@ -319,6 +336,7 @@ bool DebugSession::CompleteBackendAttach() {
 DebugSession::LaunchResult DebugSession::Launch(const LaunchOptions& opts) {
 	LaunchResult result;
     // Reject before local file lookup, process creation, or session mutation.
+    if(opts.agent&&opts.agent->vmTarget){result.error="VM sessions do not create host processes.";return result;}
     if (opts.agent && opts.agent->guestTarget) {
         result.error = "Guest process launch is not supported by this frontend yet. Start the program in the guest and use veh_attach with target_scope=guest.";
         return result;
@@ -479,7 +497,7 @@ bool DebugSession::Detach() {
 		targetProcess_ = nullptr;
 	}
 	launchedByUs_ = false;
-	guestTarget_ = false;
+	guestTarget_ = false;vmTarget_ = false;
 	externalAttachPending_ = false;
 	targetAddressBits_ = 0;
 
@@ -523,13 +541,13 @@ bool DebugSession::Terminate(uint32_t exitCode) {
 }
 
 bool DebugSession::IsTargetAlive() {
-	if (guestTarget_) {
+	if (guestTarget_ || vmTarget_) {
         std::vector<uint8_t> bytes;
         GetTargetInfoResponse info{};
         if (!attached_ || externalAttachPending_ || !ipcTransport_->SendAndReceive(
                 IpcCommand::GetTargetInfo, nullptr, 0, bytes) || bytes.size() != sizeof(info)) return false;
         memcpy(&info, bytes.data(), sizeof(info));
-        return info.status == IpcStatus::Ok && info.scope == IpcTargetScope::Guest &&
+        return info.status == IpcStatus::Ok && info.scope == (vmTarget_?IpcTargetScope::VirtualMachine:IpcTargetScope::Guest) &&
             info.pid == targetPid_ && info.addressBits == targetAddressBits_;
     }
 	if (!targetProcess_) return false;
