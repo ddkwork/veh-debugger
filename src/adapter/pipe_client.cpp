@@ -120,7 +120,7 @@ bool PipeClient::Connect(uint32_t targetPid, int timeoutMs) {
 		auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
 			std::chrono::steady_clock::now() - start).count();
 		if (elapsed >= timeoutMs) {
-			LOG_ERROR("Pipe connect timeout (%dms) for PID %u", timeoutMs, targetPid);
+			LOG_ERROR("Pipe connect timeout (%dms) for PID %u (last error %lu)", timeoutMs, targetPid, GetLastError());
 			CloseHandle(stopEvent_);
 			stopEvent_ = nullptr;
 			return false;
