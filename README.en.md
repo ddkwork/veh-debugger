@@ -331,7 +331,7 @@ The table below documents the complete public tool surface. Treat the running se
 |------|------|-------------|
 | `veh_toolbox` | `operation, tool?, arguments?, profile?, query?, schema_handle?` | Lazy gateway for tools not eager in the active profile. Search, describe, and call tools; reuse a `describe` response's `schema_handle` for a short unchanged check. |
 | `veh_virtual_machine` | `operation, cpu?, max_instructions?, duration_ms?, cpl_mask?, cr3_roots?, rip_begin?, rip_end?` | Explicit whole-VM control and paused-vCPU trace; manual calls only |
-| `veh_attach` | `pid, backend?/agent?, agent_args?, target_scope?` | VEH injection or external backend attach; guest PIDs require guest scope and backend validation |
+| `veh_attach` | `pid?, backend?/agent?, agent_args?, target_scope?` | VEH injection or external backend attach; guest PIDs require guest scope and backend validation VM attachment omits pid. |
 | `veh_launch` | `program, args?, stopOnEntry?, cwd?, env?, backend?/agent?, target_scope?` | Create/attach a host process with optional cwd/env; guest launch/stopOnEntry rejects and preserves an existing session |
 | `veh_detach` | - | Detach debugger (target keeps running) |
 | `veh_terminate` | `exitCode?` | Kill the target from **inside** (the injected DLL calls `TerminateProcess` on its own process). Works even on self-protected targets that deny external `taskkill`/`OpenProcess` (deny-DACL or higher integrity), since a process's own handle always has terminate rights. Auto-detaches afterward. Replaces the `WM_CLOSE->detach->taskkill` dance. |
