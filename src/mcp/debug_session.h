@@ -536,6 +536,7 @@ private:
 	std::condition_variable stopCv_;
 	bool stopOccurred_ = false;
 	StopEvent lastStop_;
+	uint64_t stopSeq_ = 0; // stops recorded so far (lastStop_ is the stopSeq_-th)
 	std::atomic<uint64_t> sessionGeneration_{0};
 
 	// Process monitor

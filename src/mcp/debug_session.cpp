@@ -669,6 +669,11 @@ bool DebugSession::Continue(uint32_t threadId, bool passException) {
 ContinueResult DebugSession::ContinueWithDetails(uint32_t threadId, bool passException) {
 	ContinueResult result;
 	uint32_t resumedLaunchThread = ResumeMainThread(threadId);
+	uint64_t seqBefore;
+	{
+		std::lock_guard<std::mutex> lock(stopMutex_);
+		seqBefore = stopSeq_;
+	}
 	ContinueRequest req{};
 	req.threadId = threadId;
 	req.passException = passException ? 1 : 0;
@@ -701,6 +706,18 @@ ContinueResult DebugSession::ContinueWithDetails(uint32_t threadId, bool passExc
 					header.stillStoppedCount * sizeof(uint32_t));
 			}
 		}
+	}
+	// A stop recorded before this continue, of a thread it resumed, is over: a
+	// later wait (or a cached-stop check) must not report that thread stopped.
+	{
+		std::lock_guard<std::mutex> lock(stopMutex_);
+		const bool listed = !result.resumedThreadIds.empty() || !result.stillStoppedThreadIds.empty();
+		const bool resumed = listed
+			? std::find(result.resumedThreadIds.begin(), result.resumedThreadIds.end(), lastStop_.threadId) !=
+				result.resumedThreadIds.end()
+			: threadId == 0 || lastStop_.threadId == threadId; // a peer without details
+		if (stopOccurred_ && stopSeq_ <= seqBefore && resumed)
+			stopOccurred_ = false;
 	}
 
 	if (resumedLaunchThread != 0) result.resumedThreadIds.push_back(resumedLaunchThread);
@@ -874,6 +891,7 @@ void DebugSession::SignalStop(const std::string& reason, uint64_t addr, uint32_t
 	{
 		std::lock_guard<std::mutex> lock(stopMutex_);
 		stopOccurred_ = true;
+		++stopSeq_;
 		lastStop_.stopped = true;
 		lastStop_.reason = reason;
 		lastStop_.address = addr;
