@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Fixed
+- **Caller trace duration compatibility** -- `veh_trace_callers` returns both `durationMs` and the legacy `durationSec` field. Whole seconds retain integer values; subsecond windows use fractional seconds without rounding. Both `duration_sec` and `duration_ms` inputs remain supported, with milliseconds taking precedence when both are provided.
 - **Guest backend PID namespace** -- external guest attach validates backend scope, PID and address width without opening host targets or monitoring host PIDs. Guest launch fails explicitly until supported. Unsupported pause and terminate requests no longer report success.
 - **Shellcode IPC wait budget** -- execution waits use the requested timeout plus backend setup and cleanup time, so valid runs longer than three seconds do not fail at the transport's default deadline.
 - **Missing compare-exchange trace writes** -- `veh_trace_basic_blocks` now records memory writes for `cmpxchg`, `cmpxchg8b`, and `cmpxchg16b`, with or without `LOCK`, in inline events, `.vte` streams, and aggregate write tables. Both successful exchanges and failed comparisons carry actual before/after bytes; failed comparisons and successful same-value stores remain write events even when the bytes are unchanged.

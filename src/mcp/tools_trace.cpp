@@ -55,6 +55,7 @@ json McpServer::ToolTraceCallers(const json& args) {
 		{"totalHits", result.totalHits},
 		{"uniqueCallers", result.uniqueCallers},
 		{"durationMs", durationMs},
+		{"durationSec", durationMs % 1000 == 0 ? json(durationMs / 1000) : json(durationMs / 1000.0)},
 		{"callers", callers}
 	};
 }
