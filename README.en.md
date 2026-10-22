@@ -294,6 +294,35 @@ Restart the agent/IDE after configuring to activate.
 
 The default `lite` profile eagerly exposes only `veh_toolbox` plus launch/attach/continue/batch/terminate/registers, reducing the tool-schema cost on each request. Use `veh_toolbox` to search, describe, then call other tools; automation that already knows a hidden tool name can still call it directly. Select `--profile=interactive` for breakpoint/inspection work, `--profile=capture` for VM trace/checkpoint work, or `--profile=full` for the legacy complete inventory.
 
+### External backends and VM guest attachment (MCP)
+
+The default `backend="veh"` injects the VEH DLL into a host process. Select an
+external backend by registered `backend` name or explicit `agent` executable.
+Check the attach response's `backend.unsupported` for command availability;
+`noTargetFootprint` alone does not identify guest scope or imply tool parity.
+
+Register a VM backend in `veh-backends.json` beside the server, or select another
+file with `VEH_BACKENDS`. Relative executable paths resolve from that file's
+directory. Supply the backend's VM selection/connection arguments in `args`.
+
+```json
+{"guest-lab":{"path":"guest-backend.exe","args":[],"target_scope":"guest"}}
+```
+
+Then call `veh_attach(pid=1234, backend="guest-lab")` for an existing guest PID.
+Explicit selection uses `agent`, `agent_args` and `target_scope="guest"`.
+The backend validates guest PID and32/64-bit metadata; guest sessions open no
+host target process handle and install no host PID monitor. Satisfy backend
+prerequisites first, including a paused VM when required. This interface does
+not provide guest process enumeration/selection.
+
+**Guest `veh_launch` and `stopOnEntry` remain unsupported.** They reject before
+host process creation or replacement of an existing session. Stop/step/trace
+commands depend on the selected backend's capabilities. These options belong
+to MCP and do not add guest configuration to the VSCode DAP launch schema.
+Inspect live tool help with
+`veh_toolbox(operation="describe", tool="veh_attach")`.
+
 **MCP Tools**
 
 The table below documents the complete public tool surface. Treat the running server's MCP `tools/list` response as the authoritative eager inventory for its active profile.
@@ -301,8 +330,8 @@ The table below documents the complete public tool surface. Treat the running se
 | Tool | Args | Description |
 |------|------|-------------|
 | `veh_toolbox` | `operation, tool?, arguments?, profile?, query?, schema_handle?` | Lazy gateway for tools not eager in the active profile. Search, describe, and call tools; reuse a `describe` response's `schema_handle` for a short unchanged check. |
-| `veh_attach` | `pid` | Inject DLL + connect pipe |
-| `veh_launch` | `program, args?, stopOnEntry?, cwd?, env?` | Create process + inject. `cwd` sets the target's working directory (omit to inherit the debugger's cwd). `env` passes environment variables to the target (`{"KEY":"VAL"}` or `["KEY=VALUE"]`, overlaid on the inherited parent environment) |
+| `veh_attach` | `pid, backend?/agent?, agent_args?, target_scope?` | VEH injection or external backend attach; guest PIDs require guest scope and backend validation |
+| `veh_launch` | `program, args?, stopOnEntry?, cwd?, env?, backend?/agent?, target_scope?` | Create/attach a host process with optional cwd/env; guest launch/stopOnEntry rejects and preserves an existing session |
 | `veh_detach` | - | Detach debugger (target keeps running) |
 | `veh_terminate` | `exitCode?` | Kill the target from **inside** (the injected DLL calls `TerminateProcess` on its own process). Works even on self-protected targets that deny external `taskkill`/`OpenProcess` (deny-DACL or higher integrity), since a process's own handle always has terminate rights. Auto-detaches afterward. Replaces the `WM_CLOSE->detach->taskkill` dance. |
 | `veh_set_breakpoint` | `address, condition?, hitCondition?, logMessage?, action?` | Software BP. `action` auto-executes on hit (veh_batch format) |

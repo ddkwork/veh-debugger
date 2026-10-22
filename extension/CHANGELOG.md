@@ -2,9 +2,14 @@
 
 ## Unreleased
 
+### Added
+- **External guest attachment (MCP)** -- `veh_attach` accepts `target_scope="guest"` directly or through a registered backend. The backend validates PID and32/64-bit metadata, without opening or monitoring the same numeric host PID. Agent reuse checks executable, arguments and scope. Guest process discovery and guest launch/stopOnEntry remain unsupported.
+
 ### Fixed
 - **Caller trace duration compatibility** -- `veh_trace_callers` returns both `durationMs` and the legacy `durationSec` field. Whole seconds retain integer values; subsecond windows use fractional seconds without rounding. Both `duration_sec` and `duration_ms` inputs remain supported, with milliseconds taking precedence when both are provided.
-- **Guest backend PID namespace** -- external guest attach validates backend scope, PID and address width without opening host targets or monitoring host PIDs. Guest launch fails explicitly until supported. Unsupported pause and terminate requests no longer report success.
+- **Guest launch routing** -- unsupported guest launch rejects before host process creation or replacement of the current session.
+- **Unsupported backend results** -- pause and terminate no longer report success when unsupported; rejected termination preserves the session.
+- **Backend help and setup** -- attach/launch descriptions, argument help, CLI help, Korean/English READMEs and extension MCP documentation now distinguish native host debugging from external guest attachment and its limits.
 - **Shellcode IPC wait budget** -- execution waits use the requested timeout plus backend setup and cleanup time, so valid runs longer than three seconds do not fail at the transport's default deadline.
 - **Missing compare-exchange trace writes** -- `veh_trace_basic_blocks` now records memory writes for `cmpxchg`, `cmpxchg8b`, and `cmpxchg16b`, with or without `LOCK`, in inline events, `.vte` streams, and aggregate write tables. Both successful exchanges and failed comparisons carry actual before/after bytes; failed comparisons and successful same-value stores remain write events even when the bytes are unchanged.
 - **Conditional operand dependency gaps** -- register dependency tracking includes conditional reads and writes and conservatively retains a conditional destination's previous origins. Memory-source `cmov` reads are collected on either outcome. Other conditional or masked memory accesses whose executed bytes cannot be determined are reported as unsupported instead of silently omitted or fabricated as full-operand accesses; dependency results are marked incomplete when an unsupported memory access is encountered.

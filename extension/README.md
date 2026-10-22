@@ -79,6 +79,15 @@ This is equivalent to Cheat Engine's "Find out what writes to this address" / "F
 
 The bundled `veh-mcp-server.exe` exposes debugging operations through the Model Context Protocol, allowing AI agents to directly control the debugger. Its default token-bounded `lite` profile exposes a small common set plus the `veh_toolbox` lazy gateway; use `--profile=interactive`, `--profile=capture`, or `--profile=full` when a larger eager inventory is preferable. Known hidden tool names remain directly callable. The running server's MCP `tools/list` response is the authoritative eager inventory.
 
+MCP can also attach through an external backend with `backend` or `agent`.
+For VM guest PIDs, register `target_scope: "guest"` in `veh-backends.json`
+(or pass it to `veh_attach`); backend PID/address-width validation is required.
+Guest `veh_launch`/`stopOnEntry` is unsupported, and other commands depend on
+the attach response's `backend.unsupported`. This is MCP support, not a guest
+extension to the VSCode DAP launch configuration. Use `veh_toolbox` with
+`operation="describe"` for the live attach/launch schema. See the repository's
+English README for registration and prerequisites.
+
 `veh_trace_basic_blocks` supports x86/x64 ordered memory and register provenance,
 self-modifying code versions, dispatcher occurrence windows, and file-backed
 JSON/JSONL or `.vtc` artifacts. Direct calls, `veh_batch`, and breakpoint actions

@@ -1064,18 +1064,18 @@ bool McpServer::ParseAddress(const std::string& addrStr, uint64_t& out) {
 std::vector<McpServer::ToolDef> McpServer::BuildAllToolsList() {
 	std::vector<ToolDef> tools = {
 		Tool(&McpServer::ToolAttach, "session", kLite | kInteractive, false,
-			{{"name", "veh_attach"}, {"description", "Attach to a running process by PID. Injects VEH debugger DLL. Auto-detaches if already attached. Target process must be running (not CREATE_SUSPENDED)."},
+			{{"name", "veh_attach"}, {"description", "Attach by host or guest PID using VEH or an external backend. Replaces the current session. Default VEH requires a running host process. Guest PIDs require an external backend, target_scope=guest, validated PID/width and backend VM prerequisites."},
 		 {"inputSchema", {{"type", "object"}, {"properties", {
-			{"pid", {{"type", "integer"}, {"description", "Process ID to attach to"}}},
+			{"pid", {{"type", "integer"}, {"description", "Process ID in the selected host or guest target scope"}}},
 			{"backend", {{"type", "string"}, {"description", "veh (default): inject the VEH DLL. Any other name: an out-of-process agent registered in veh-backends.json next to the server (or VEH_BACKENDS); nothing is injected. The response's backend.unsupported lists tool families the backend cannot serve."}}},
 			{"agent", {{"type", "string"}, {"description", "Path of an out-of-process agent to use instead of a registered backend name. Started as: <agent> --pid <pid> --pipe <name> [agent_args]."}}},
-			{"target_scope", {{"type", "string"}, {"enum", json::array({"host", "guest"})}, {"description", "Target PID/path namespace. Defaults to the registered backend's target_scope, otherwise host. Guest attach requires backend target metadata; guest launch is currently unsupported."}}},
+			{"target_scope", {{"type", "string"}, {"enum", json::array({"host", "guest"})}, {"description", "host by default, or registered target_scope. guest requires backend PID/width validation; guest launch is unsupported."}}},
 			{"agent_args", {{"type", "array"}, {"items", {{"type", "string"}}}, {"description", "Extra arguments for agent."}}},
 			{"logFile", {{"type", "string"}, {"description", "Enable server-side logging to this file path (e.g. 'veh-mcp.log'). Omit to disable logging."}}}
 		 }}, {"required", json::array({"pid"})}}}}),
 
 		Tool(&McpServer::ToolLaunch, "session", kLite | kInteractive | kCapture, false,
-			{{"name", "veh_launch"}, {"description", "Launch a program and attach the debugger. Auto-detaches if already attached. Handles CREATE_SUSPENDED internally."},
+			{{"name", "veh_launch"}, {"description", "Launch and attach a host program through VEH or an external host backend using CREATE_SUSPENDED. Guest launch/stopOnEntry is unsupported; rejection preserves the session and creates no host process."},
 		 {"inputSchema", {{"type", "object"}, {"properties", {
 			{"program", {{"type", "string"}, {"description", "Path to executable"}}},
 			{"args", {{"type", "array"}, {"items", {{"type", "string"}}}, {"description", "Command line arguments"}}},
@@ -1084,9 +1084,9 @@ std::vector<McpServer::ToolDef> McpServer::BuildAllToolsList() {
 			{"stopOnEntry", {{"type", "boolean"}, {"description", "Stop at entry point (default: true)"}}},
 			{"runAsInvoker", {{"type", "boolean"}, {"description", "Bypass UAC elevation prompt by setting __COMPAT_LAYER=RunAsInvoker (default: false)"}}},
 			{"injectionMethod", {{"type", "string"}, {"enum", json::array({"auto", "createRemoteThread", "ntCreateThreadEx", "threadHijack", "queueUserApc"})}, {"description", "DLL injection method (default: auto). Auto tries all methods in order."}}},
-			{"backend", {{"type", "string"}, {"description", "veh (default): inject the VEH DLL. Any other name: an out-of-process agent registered in veh-backends.json; the process is created suspended and nothing is injected (stopOnEntry keeps the main thread suspended before the loader runs)."}}},
+			{"backend", {{"type", "string"}, {"description", "veh (default): inject the VEH DLL. Other names select veh-backends.json (or VEH_BACKENDS). External host backends create the process suspended without injection. Guest backends reject launch; use veh_attach for an existing guest PID."}}},
 			{"agent", {{"type", "string"}, {"description", "Path of an out-of-process agent to use instead of a registered backend name."}}},
-			{"target_scope", {{"type", "string"}, {"enum", json::array({"host", "guest"})}, {"description", "Target PID/path namespace. Defaults to the registered backend's target_scope, otherwise host. Guest attach requires backend target metadata; guest launch is currently unsupported."}}},
+			{"target_scope", {{"type", "string"}, {"enum", json::array({"host", "guest"})}, {"description", "host by default, or registered target_scope. guest requires backend PID/width validation; guest launch is unsupported."}}},
 			{"agent_args", {{"type", "array"}, {"items", {{"type", "string"}}}, {"description", "Extra arguments for agent."}}},
 			{"logFile", {{"type", "string"}, {"description", "Enable server-side logging to this file path (e.g. 'veh-mcp.log'). Omit to disable logging."}}}
 		 }}, {"required", json::array({"program"})}}}}),

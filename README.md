@@ -311,6 +311,33 @@ enabled = true
 
 기본 `lite` 프로필은 `veh_toolbox`, launch/attach/continue/batch/terminate/registers만 먼저 노출하여 매 요청의 도구 스키마 비용을 줄입니다. 나머지는 `veh_toolbox`로 검색 → schema 확인 → 호출하며, 이름을 아는 자동화는 숨겨진 도구도 기존처럼 직접 호출할 수 있습니다. BP/inspection 중심은 `--profile=interactive`, VM trace/checkpoint 중심은 `--profile=capture`, 기존 전체 목록은 `--profile=full`을 사용하세요.
 
+### 외부 백엔드와 VM 안의 프로세스 연결 (MCP)
+
+기본 `backend="veh"`는 호스트 프로세스에 VEH DLL을 주입합니다. 외부 백엔드는
+`backend` 이름이나 `agent` 실행 파일로 선택하며, 도구 지원 범위는 attach 응답의
+`backend.unsupported`로 확인합니다. `noTargetFootprint`만으로 게스트 대상 여부나
+모든 도구의 지원을 판단하지 않습니다.
+
+VM용 백엔드는 서버 옆 `veh-backends.json`에 다음처럼 등록합니다. `VEH_BACKENDS`
+환경변수로 다른 설정 파일을 지정할 수도 있습니다. 상대 실행 파일 경로는 설정 파일
+디렉터리를 기준으로 하고, `args`에는 해당 백엔드의 VM 선택·접속 인자를 넣습니다.
+
+```json
+{"guest-lab":{"path":"guest-backend.exe","args":[],"target_scope":"guest"}}
+```
+
+이후 `veh_attach(pid=1234, backend="guest-lab")`로 기존 게스트 PID에 연결합니다.
+직접 지정할 때는 `agent`, `agent_args`, `target_scope="guest"`를 전달합니다.
+PID와 32·64비트 정보는 백엔드가 검증하며, 게스트 연결은 호스트 프로세스 핸들이나
+호스트 PID 종료 감시를 사용하지 않습니다. 정지된 VM을 요구하는 백엔드는 연결 전에
+그 조건을 충족해야 합니다. 게스트 프로세스 목록·선택은 이 기능이 제공하지 않습니다.
+
+**게스트 `veh_launch`와 `stopOnEntry`는 아직 지원하지 않습니다.** 요청은 호스트에서
+프로그램을 실행하거나 현재 세션을 끊기 전에 거부됩니다. 정지·스텝·트레이스는 각
+백엔드가 지원한다고 보고한 명령만 사용할 수 있습니다. 이 설정은 MCP용이며 VSCode
+DAP의 게스트 연결 설정은 추가하지 않습니다. 실행 중 서버의 도구 설명은
+`veh_toolbox(operation="describe", tool="veh_attach")`로 확인할 수 있습니다.
+
 **MCP 도구 목록**
 
 아래 표는 전체 공개 도구를 설명합니다. 실행 중인 서버의 현재 eager 목록은 MCP `tools/list` 응답을 기준으로 확인하세요.
@@ -318,8 +345,8 @@ enabled = true
 | 도구 | 인자 | 설명 |
 |------|------|------|
 | `veh_toolbox` | `operation, tool?, arguments?, profile?, query?, schema_handle?` | 현재 프로필에 eager 노출되지 않은 도구를 검색·설명·호출하는 lazy gateway. `describe`가 반환한 `schema_handle`을 재사용하면 변경 없음만 짧게 확인한다. |
-| `veh_attach` | `pid` | 프로세스에 DLL 인젝션 + 파이프 연결 |
-| `veh_launch` | `program, args?, stopOnEntry?, cwd?, env?` | 프로세스 생성 + 인젝션. `cwd`로 타겟 작업 디렉토리 지정(생략 시 디버거 cwd 상속). `env`로 타겟에 환경변수 전달 (`{"KEY":"VAL"}` 또는 `["KEY=VALUE"]`, 부모 환경 위에 덮어씀) |
+| `veh_attach` | `pid, backend?/agent?, agent_args?, target_scope?` | VEH 주입 또는 외부 백엔드 연결. VM PID는 `target_scope="guest"`와 백엔드 검증 필요 |
+| `veh_launch` | `program, args?, stopOnEntry?, cwd?, env?, backend?/agent?, target_scope?` | 호스트 프로세스 생성·연결. `cwd`/`env` 지원. 게스트 launch/stopOnEntry는 미지원이며 기존 세션을 보존하고 거부 |
 | `veh_detach` | - | 디버거 분리 (타겟은 계속 실행) |
 | `veh_terminate` | `exitCode?` | 타겟을 **내부에서** 강제 종료 (주입된 DLL이 자기 프로세스에 `TerminateProcess` 호출). 외부 `taskkill`/`OpenProcess`를 막는 자기보호 타겟(deny-DACL/상위 무결성)도 확실히 종료 -- 프로세스 자기 핸들은 항상 종료 권한 보유. 종료 후 자동 detach. `WM_CLOSE->detach->taskkill` 수순 대체 |
 | `veh_set_breakpoint` | `address, condition?, hitCondition?, logMessage?, action?` | 소프트웨어 BP. `action`으로 히트 시 자동 실행 (veh_batch 형식) |

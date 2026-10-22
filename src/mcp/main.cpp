@@ -29,6 +29,13 @@ void PrintUsage() {
 		"  veh-mcp-server --install claude-code   # Install to Claude Code only\n"
 		"  veh-mcp-server --uninstall             # Uninstall from all agents\n"
 		"\n"
+		"Backends:\n"
+        "  veh_attach uses VEH by default, or selects an external backend/agent.\n"
+        "  Register names in veh-backends.json beside this executable, or VEH_BACKENDS.\n"
+        "  target_scope=guest uses a guest PID and backend-validated address width.\n"
+        "  Guest launch/stopOnEntry is unsupported; inspect backend.unsupported.\n"
+        "  Tool help: veh_toolbox(operation=describe, tool=veh_attach or veh_launch).\n"
+        "\n"
 		"This server communicates via stdin/stdout using MCP (JSON-RPC 2.0).\n"
 	);
 }
