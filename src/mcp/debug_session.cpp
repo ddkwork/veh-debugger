@@ -1246,7 +1246,7 @@ EvalResult DebugSession::Evaluate(const std::string& expression, uint32_t thread
 	return result;
 }
 
-TraceResult DebugSession::TraceCallers(uint64_t address, uint32_t durationSec) {
+TraceResult DebugSession::TraceCallers(uint64_t address, uint32_t durationMs) {
 	TraceResult result;
 
 	// Auto-resume. A backend that never stops threads (hypervisor) has nothing
@@ -1261,10 +1261,10 @@ TraceResult DebugSession::TraceCallers(uint64_t address, uint32_t durationSec) {
 
 	TraceCallersRequest req{};
 	req.address = address;
-	req.durationMs = durationSec * 1000;
+	req.durationMs = durationMs;
 
 	std::vector<uint8_t> respData;
-	int timeoutMs = (durationSec + 10) * 1000;
+	int timeoutMs = static_cast<int>(durationMs) + 10000;
 	const bool received = ipcTransport_->SendAndReceive(IpcCommand::TraceCallers, &req, sizeof(req), respData, timeoutMs);
 	// Auto-pause after collection
 	if (stops) {

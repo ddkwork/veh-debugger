@@ -1301,7 +1301,8 @@ std::vector<McpServer::ToolDef> McpServer::BuildAllToolsList() {
 			{{"name", "veh_trace_callers"}, {"description", "Profile who calls a function: sets BP at address, auto-resumes process, collects all unique callers with hit counts for duration_sec seconds, then pauses and returns results. Useful for call graph analysis and finding hot callers. x64: uses RtlVirtualUnwind for accurate caller resolution. x86: uses [ESP] (accurate only at function entry). Process is automatically resumed before tracing and paused after."},
 		 {"inputSchema", {{"type", "object"}, {"properties", {
 			{"address", {{"type", "string"}, {"description", "Hex address to set breakpoint (e.g. '0x7FF600001000')"}}},
-			{"duration_sec", {{"type", "integer"}, {"description", "How long to collect callers in seconds (default: 5, max: 60)"}}}
+			{"duration_sec", {{"type", "integer"}, {"description", "How long to collect callers in seconds (default: 5, max: 60)"}}},
+			{"duration_ms", {{"type", "integer"}, {"description", "Same window in milliseconds (50-60000); overrides duration_sec"}}}
 		 }}, {"required", json::array({"address"})}}}}),
 
 		Tool(&McpServer::ToolTraceCalls, "trace", 0, true,
@@ -1309,6 +1310,7 @@ std::vector<McpServer::ToolDef> McpServer::BuildAllToolsList() {
 		 {"inputSchema", {{"type", "object"}, {"properties", {
 			{"addresses", {{"type", "array"}, {"items", {{"type", "string"}}}, {"description", "Array of call/jmp site addresses to monitor (hex or module+RVA)"}}},
 			{"duration_sec", {{"type", "integer"}, {"description", "How long to monitor in seconds (default: 5, max: 60)"}}},
+			{"duration_ms", {{"type", "integer"}, {"description", "Same window in milliseconds (50-60000); overrides duration_sec"}}},
 			{"resolve", {{"type", "boolean"}, {"description", "Follow through thunks to final target (system DLL). Uses natural call context. Default: false"}}},
 			{"system_only", {{"type", "boolean"}, {"description", "Only resolve to system DLLs. Default: false"}}}
 		 }}, {"required", json::array({"addresses"})}}}}),

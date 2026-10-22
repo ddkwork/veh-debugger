@@ -1,6 +1,7 @@
 // VEH Debugger 테스트 타겟
 // Sleep에 브레이크포인트를 걸어서 테스트
 #include <windows.h>
+#include <cstdlib>
 #include <cstdio>
 #include <cstring>
 #include <intrin.h>
@@ -142,6 +143,11 @@ int main(int argc, char* argv[]) {
 	memcpy(static_cast<unsigned char*>(g_trace_executable) + 0x200, kTraceMidBlockCode, sizeof(kTraceMidBlockCode));
 	(void)kTraceMidBlockTarget;
 	bool traceExceptionMode = argc > 1 && strcmp(argv[1], "--trace-exception") == 0;
+	// --interval <ms>: main loop period (default 1000); tests shorten it instead of sleeping longer
+	DWORD interval = 1000;
+	for (int i = 1; i + 1 < argc; ++i)
+		if (strcmp(argv[i], "--interval") == 0)
+			interval = static_cast<DWORD>(atoi(argv[i + 1]));
 	if (traceExceptionMode)
 		AddVectoredExceptionHandler(0, TraceCoverageExceptionHandler);
 
@@ -157,7 +163,7 @@ int main(int argc, char* argv[]) {
 		TraceOverlapTarget();
 		TraceMidBlockTarget();
 		g_scan_value += 1 + (g_search_marker[0] >> 7);  // +1; the read keeps the marker alive
-		SleepEx(1000, TRUE);  // alertable wait — APC 인젝션 테스트 가능
+		SleepEx(interval, TRUE);  // alertable wait — APC 인젝션 테스트 가능
 	}
 
 	return 0;

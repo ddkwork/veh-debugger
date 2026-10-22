@@ -289,7 +289,7 @@ public:
 	// --- Analysis ---
 	std::vector<DisasmInsn> Disassemble(uint64_t address, uint32_t count);
 	EvalResult Evaluate(const std::string& expression, uint32_t threadId);
-	TraceResult TraceCallers(uint64_t address, uint32_t durationSec);
+	TraceResult TraceCallers(uint64_t address, uint32_t durationMs);
 
 	// Register trace: step internally until register condition met
 	struct TraceRegResult {

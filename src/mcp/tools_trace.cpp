@@ -17,6 +17,16 @@
 
 namespace veh {
 
+// Collection window: duration_ms (50..60000) when given, else duration_sec (1..60, default 5).
+static uint32_t DurationMs(const json& args) {
+	if (args.contains("duration_ms")) {
+		const int ms = JsonInt(args, "duration_ms", 5000);
+		return static_cast<uint32_t>(ms < 50 ? 50 : (ms > 60000 ? 60000 : ms));
+	}
+	const int sec = JsonInt(args, "duration_sec", 5);
+	return static_cast<uint32_t>(sec < 1 ? 1 : (sec > 60 ? 60 : sec)) * 1000;
+}
+
 json McpServer::ToolTraceCallers(const json& args) {
 	if (!session_.IsAttached()) return {{"error", NotAttachedMessage()}};
 
@@ -28,11 +38,8 @@ json McpServer::ToolTraceCallers(const json& args) {
 		return {{"error", "invalid address format"}};
 	}
 
-	int durationSec = JsonInt(args, "duration_sec", 5);
-	if (durationSec < 1) durationSec = 1;
-	if (durationSec > 60) durationSec = 60;
-
-	auto result = session_.TraceCallers(addr, static_cast<uint32_t>(durationSec));
+	const uint32_t durationMs = DurationMs(args);
+	auto result = session_.TraceCallers(addr, durationMs);
 	if (result.totalHits == 0 && result.callers.empty()) {
 		return {{"error", IpcErrorMessage()}};
 	}
@@ -47,7 +54,7 @@ json McpServer::ToolTraceCallers(const json& args) {
 	return {
 		{"totalHits", result.totalHits},
 		{"uniqueCallers", result.uniqueCallers},
-		{"durationSec", durationSec},
+		{"durationMs", durationMs},
 		{"callers", callers}
 	};
 }
@@ -280,9 +287,7 @@ json McpServer::ToolTraceCalls(const json& args) {
 	if (addresses.empty()) return {{"error", "addresses (array of call/jmp site addresses) is required"}};
 	if (addresses.size() > 4000) return {{"error", "Too many addresses (max 4000)"}};
 
-	int durationSec = JsonInt(args, "duration_sec", 5);
-	if (durationSec < 1) durationSec = 1;
-	if (durationSec > 60) durationSec = 60;
+	const uint32_t durationMs = DurationMs(args);
 
 	bool resolve = false;
 	if (args.contains("resolve") && args["resolve"].is_boolean())
@@ -291,7 +296,7 @@ json McpServer::ToolTraceCalls(const json& args) {
 	if (args.contains("system_only") && args["system_only"].is_boolean())
 		systemOnly = args["system_only"].get<bool>();
 
-	auto result = session_.TraceCalls(addresses, static_cast<uint32_t>(durationSec) * 1000,
+	auto result = session_.TraceCalls(addresses, durationMs,
 		resolve, systemOnly);
 
 	json arr = json::array();
