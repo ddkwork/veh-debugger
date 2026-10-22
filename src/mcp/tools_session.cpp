@@ -58,12 +58,26 @@ bool ResolveBackend(const json& args, std::optional<DebugSession::ExternalAgent>
 				if (s.is_string()) v.push_back(s.get<std::string>());
 		return v;
 	};
+    auto scope = [&](const json& defaults, bool& guest) {
+        const json value = args.contains("target_scope") ? args["target_scope"] : defaults.value("target_scope", json("host"));
+        if (!value.is_string() || (value != "host" && value != "guest")) {
+            error = "target_scope must be host or guest";
+            return false;
+        }
+        guest = value == "guest";
+        return true;
+    };
 	if (args.contains("agent") && args["agent"].is_string()) {
 		out = DebugSession::ExternalAgent{args["agent"].get<std::string>(), strings(args.value("agent_args", json::array()))};
-		return true;
+		return scope(json::object(), out->guestTarget);
 	}
 	const std::string name = args.value("backend", "veh");
-	if (name == "veh") return true;
+	if (name == "veh") {
+        bool guest = false;
+        if (!scope(json::object(), guest)) return false;
+        if (guest) { error = "target_scope=guest requires an external backend"; return false; }
+        return true;
+    }
 
 	std::filesystem::path file;
 	wchar_t env[MAX_PATH] = {};
@@ -83,7 +97,7 @@ bool ResolveBackend(const json& args, std::optional<DebugSession::ExternalAgent>
 	std::filesystem::path path = table[name]["path"].get<std::string>();
 	if (path.is_relative()) path = file.parent_path() / path;
 	out = DebugSession::ExternalAgent{path.string(), strings(table[name].value("args", json::array()))};
-	return true;
+	return scope(table[name], out->guestTarget);
 }
 
 json BackendSummary(const DebugSession::BackendInfo& info) {
@@ -91,7 +105,8 @@ json BackendSummary(const DebugSession::BackendInfo& info) {
 		{"kind", info.backend == IpcBackend::Hypervisor ? "hypervisor" : "veh-dll"},
 		{"stopsThreads", (info.flags & kCapStopsThreads) != 0},
 		{"hiddenBreakpoints", (info.flags & kCapHiddenBreakpoints) != 0},
-		{"noTargetFootprint", (info.flags & kCapNoTargetFootprint) != 0}};
+		{"noTargetFootprint", (info.flags & kCapNoTargetFootprint) != 0},
+		{"targetScope", (info.flags & kCapGuestTarget) ? "guest" : "host"}};
 	json missing = json::array();
 	for (const auto& c : kOptionalCommands)
 		if (!info.Supports(c.cmd)) missing.push_back(c.name);
@@ -138,10 +153,16 @@ json McpServer::ToolAttach(const json& args) {
 		LOG_WARN("No Ready after attach/launch; proceeding (VEH may not be installed yet)");
 	}
 	session_.QueryBackendInfo();
+    if (!session_.CompleteBackendAttach()) {
+        const auto error = session_.LastAttachError();
+        session_.Detach();
+        return {{"error", error.empty() ? "Backend target scope validation failed" : error}};
+    }
 	session_.StartProcessMonitor();
 
 	json ret = {{"success", true}, {"pid", pid}, {"message", "Attached to process"}};
 	ret["backend"] = BackendSummary(session_.GetBackendInfo());
+	if (session_.IsGuestTarget()) ret["addressBits"] = session_.TargetAddressBits();
 	// Include main module info (saves a veh_modules round-trip)
 	auto modules = session_.GetModules();
 	if (!modules.empty()) {
@@ -156,6 +177,11 @@ json McpServer::ToolLaunch(const json& args) {
 		std::string lf = args["logFile"].get<std::string>();
 		if (!lf.empty()) veh::Logger::Instance().SetFile(lf);
 	}
+	std::optional<DebugSession::ExternalAgent> agent;
+	if (std::string error; !ResolveBackend(args, agent, error))
+		return {{"error", error}};
+    if (agent && agent->guestTarget)
+        return {{"error", "Guest process launch is not supported yet. Start the program in the guest and attach with target_scope=guest."}};
 	if (session_.IsAttached()) {
 		LOG_INFO("Auto-detaching from previous session (pid=%u) before new launch", session_.GetTargetPid());
 		ToolDetach({});
@@ -194,9 +220,6 @@ json McpServer::ToolLaunch(const json& args) {
 	opts.runAsInvoker = JsonBool(args, "runAsInvoker", false);
 	opts.injectionMethod = args.value("injectionMethod", "auto");
 	opts.cwd = args.value("cwd", "");
-	std::optional<DebugSession::ExternalAgent> agent;
-	if (std::string error; !ResolveBackend(args, agent, error))
-		return {{"error", error}};
 	opts.agent = agent ? &*agent : nullptr;
 
 	auto result = session_.Launch(opts);
@@ -214,6 +237,11 @@ json McpServer::ToolLaunch(const json& args) {
 		LOG_WARN("No Ready after attach/launch; proceeding (VEH may not be installed yet)");
 	}
 	session_.QueryBackendInfo();
+    if (!session_.CompleteBackendAttach()) {
+        const auto error = session_.LastAttachError();
+        session_.Terminate();
+        return {{"error", error.empty() ? "Backend target scope validation failed" : error}};
+    }
 	session_.StartProcessMonitor();
 
 	// stopOnEntry=false: VEH 설치 완료(WaitForReady) 이후에야 메인스레드를 재개한다.
@@ -225,6 +253,7 @@ json McpServer::ToolLaunch(const json& args) {
 	json ret = {{"success", true}, {"pid", result.pid}, {"message",
 		opts.stopOnEntry ? "Launched and attached (stopped on entry)" : "Launched and attached"}};
 	ret["backend"] = BackendSummary(session_.GetBackendInfo());
+	if (session_.IsGuestTarget()) ret["addressBits"] = session_.TargetAddressBits();
 	auto modules = session_.GetModules();
 	if (!modules.empty()) {
 		char buf[20]; snprintf(buf, sizeof(buf), "0x%llX", modules[0].baseAddress);
@@ -247,7 +276,8 @@ json McpServer::ToolTerminate(const json& args) {
 
 	uint32_t pid = session_.GetTargetPid();
 	int exitCode = JsonInt(args, "exitCode", 0);
-	session_.Terminate(static_cast<uint32_t>(exitCode));
+	if (!session_.Terminate(static_cast<uint32_t>(exitCode)))
+		return {{"error", "Target termination is unsupported or the session is unavailable"}};
 	return {{"success", true}, {"pid", pid},
 	        {"message", "Terminated target from inside (in-process kill; works on self-protected targets) and detached"}};
 }

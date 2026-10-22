@@ -121,7 +121,8 @@ bool DebugSession::ConnectExternalAgent(uint32_t pid, const ExternalAgent& agent
 		HANDLE h = OpenProcess(SYNCHRONIZE, FALSE, running->second.processId);
 		const bool alive = h && WaitForSingleObject(h, 0) == WAIT_TIMEOUT;
 		if (h) CloseHandle(h);
-		if (!alive || running->second.path != agent.path) externalAgents_.erase(running);
+		if (!alive || running->second.path != agent.path || running->second.args != agent.args ||
+            running->second.guestTarget != agent.guestTarget) externalAgents_.erase(running);
 	}
 	running = externalAgents_.find(pid);
 	if (running == externalAgents_.end()) {
@@ -139,7 +140,7 @@ bool DebugSession::ConnectExternalAgent(uint32_t pid, const ExternalAgent& agent
 		}
 		CloseHandle(pi.hThread);
 		CloseHandle(pi.hProcess);
-		running = externalAgents_.emplace(pid, RunningAgent{agent.path, pipe, pi.dwProcessId}).first;
+		running = externalAgents_.emplace(pid, RunningAgent{agent.path, pipe, pi.dwProcessId, agent.args, agent.guestTarget}).first;
 	}
 	UseTransport(running->second.pipe);
 	if (!ipcTransport_->Connect(pid, 5000)) {
@@ -178,9 +179,13 @@ bool DebugSession::Attach(uint32_t pid, const ExternalAgent* agent) {
 
 	if (agent) {
 		if (!ConnectExternalAgent(pid, *agent)) return false;
+		guestTarget_ = agent->guestTarget;
+		externalAttachPending_ = true;
 		FinishAttach(pid);
 		return true;
 	}
+	guestTarget_ = false;
+	externalAttachPending_ = false;
 	UseTransport({});
 
 	if (IsProcessUninitializedSuspended(pid)) {
@@ -251,6 +256,9 @@ bool DebugSession::Attach(uint32_t pid, const ExternalAgent* agent) {
 
 void DebugSession::FinishAttach(uint32_t pid) {
 	targetPid_ = pid;
+	attached_ = true;
+	// External attach is provisional until the authenticated backend reports scope.
+	if (externalAttachPending_ || guestTarget_) return;
 	// VM_READ: 조건부 BP의 [addr]/value 평가가 이벤트 콜백 스레드에서 ReadProcessMemory로
 	// 값을 읽는다(IPC ReadMemory는 콜백 스레드에서 재진입 불가). 실패 시 VM_READ 없이 폴백.
 	targetProcess_ = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE | PROCESS_VM_READ, FALSE, pid);
@@ -267,13 +275,56 @@ void DebugSession::FinishAttach(uint32_t pid) {
 			IsWow64Process(targetProcess_, &isWow64);
 		}
 		bool is64 = (isWow64 == FALSE);
+		targetAddressBits_ = is64 ? 64 : 32;
 		disassembler_ = CreateDisassembler(is64);
 		LOG_INFO("Disassembler set to %s mode", is64 ? "x64" : "x86");
 	}
 }
 
+bool DebugSession::CompleteBackendAttach() {
+    const bool peerGuest = backendInfo_.reported && (backendInfo_.flags & kCapGuestTarget);
+    if (!externalAttachPending_) {
+        if (peerGuest) lastAttachError_ = "Guest backend requires target_scope=guest; guest launch is unsupported.";
+        return !peerGuest;
+    }
+    if (guestTarget_ != peerGuest) {
+        lastAttachError_ = "External backend target scope mismatch: guest targets require target_scope=guest and guest capabilities.";
+        return false;
+    }
+    if (guestTarget_) {
+        std::vector<uint8_t> bytes;
+        GetTargetInfoResponse info{};
+        if (!backendInfo_.Supports(IpcCommand::GetTargetInfo) ||
+            !ipcTransport_->SendAndReceive(IpcCommand::GetTargetInfo, nullptr, 0, bytes) ||
+            bytes.size() != sizeof(info)) {
+            lastAttachError_ = "Guest backend did not provide complete target metadata.";
+            return false;
+        }
+        memcpy(&info, bytes.data(), sizeof(info));
+        if (info.status != IpcStatus::Ok || info.scope != IpcTargetScope::Guest ||
+            info.pid != targetPid_ || (info.addressBits != 32 && info.addressBits != 64)) {
+            lastAttachError_ = "Guest backend target identity or address width validation failed.";
+            return false;
+        }
+        targetAddressBits_ = info.addressBits;
+        disassembler_ = CreateDisassembler(info.addressBits == 64);
+        externalAttachPending_ = false;
+        return true;
+    }
+    externalAttachPending_ = false;
+    FinishAttach(targetPid_);
+    return true;
+}
+
 DebugSession::LaunchResult DebugSession::Launch(const LaunchOptions& opts) {
 	LaunchResult result;
+    // Reject before local file lookup, process creation, or session mutation.
+    if (opts.agent && opts.agent->guestTarget) {
+        result.error = "Guest process launch is not supported by this frontend yet. Start the program in the guest and use veh_attach with target_scope=guest.";
+        return result;
+    }
+    guestTarget_ = false;
+    externalAttachPending_ = false;
 	backendInfo_ = {};
 	UseTransport({});
 
@@ -428,12 +479,15 @@ bool DebugSession::Detach() {
 		targetProcess_ = nullptr;
 	}
 	launchedByUs_ = false;
+	guestTarget_ = false;
+	externalAttachPending_ = false;
+	targetAddressBits_ = 0;
 
 	return true;
 }
 
 bool DebugSession::Terminate(uint32_t exitCode) {
-	if (!attached_) return false;
+	if (!attached_ || (!launchedByUs_ && !backendInfo_.Supports(IpcCommand::Terminate))) return false;
 
 	// 1) 인-프로세스 종료 요청. 타겟 DLL 이 TerminateProcess(GetCurrentProcess()) 를 호출하므로
 	//    외부 OpenProcess(TERMINATE) 를 막는 자기보호 타겟도 확실히 죽는다.
@@ -469,6 +523,15 @@ bool DebugSession::Terminate(uint32_t exitCode) {
 }
 
 bool DebugSession::IsTargetAlive() {
+	if (guestTarget_) {
+        std::vector<uint8_t> bytes;
+        GetTargetInfoResponse info{};
+        if (!attached_ || externalAttachPending_ || !ipcTransport_->SendAndReceive(
+                IpcCommand::GetTargetInfo, nullptr, 0, bytes) || bytes.size() != sizeof(info)) return false;
+        memcpy(&info, bytes.data(), sizeof(info));
+        return info.status == IpcStatus::Ok && info.scope == IpcTargetScope::Guest &&
+            info.pid == targetPid_ && info.addressBits == targetAddressBits_;
+    }
 	if (!targetProcess_) return false;
 	DWORD exitCode = 0;
 	if (!GetExitCodeProcess(targetProcess_, &exitCode)) return false;
@@ -678,7 +741,11 @@ bool DebugSession::Pause(uint32_t threadId) {
 	PauseRequest req{};
 	req.threadId = threadId;
 	std::vector<uint8_t> respData;
-	return ipcTransport_->SendAndReceive(IpcCommand::Pause, &req, sizeof(req), respData);
+	if (!ipcTransport_->SendAndReceive(IpcCommand::Pause, &req, sizeof(req), respData) ||
+        respData.size() < sizeof(IpcStatus)) return false;
+    IpcStatus status{};
+    memcpy(&status, respData.data(), sizeof(status));
+    return status == IpcStatus::Ok;
 }
 
 uint32_t DebugSession::ResumeMainThread(uint32_t requestedThreadId) {
@@ -755,6 +822,11 @@ void DebugSession::ResetStopState() {
 
 bool DebugSession::IsThreadOwnedByTarget(uint32_t threadId) const {
 	if (threadId == 0 || targetPid_ == 0) return false;
+    // The authenticated guest backend owns CID validation for its events. Calling
+    // host Toolhelp here would validate an unrelated namespace; IPC reentry from
+    // the event reader would deadlock.
+    if (guestTarget_) return !externalAttachPending_ && backendInfo_.reported &&
+        (backendInfo_.flags & kCapGuestTarget) != 0;
 
 	HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
 	if (snapshot == INVALID_HANDLE_VALUE) {

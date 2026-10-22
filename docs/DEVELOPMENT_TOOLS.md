@@ -157,3 +157,24 @@ py -3 tools/run_ipc_compat_matrix.py --old-build-dir <old-build> --new-build-dir
 ```
 
 The parity runner invokes the architecture-sensitive integration suite for each build root. The IPC runner verifies that ordinary tracing remains compatible in both old/new directions and that extensions unsupported by an older injected DLL fail explicitly rather than corrupting response layouts.
+
+## External guest targets
+
+For a backend whose PIDs belong to an analyzed VM, set `target_scope: "guest"`
+in its `veh-backends.json` entry, or pass `target_scope: "guest"` with `agent`
+to `veh_attach`. Registered entries select a VM through backend-specific `args`;
+use a distinct entry per VM. Scope defaults to `host` for existing backends.
+Guest peers must advertise `kCapGuestTarget` and implement `GetTargetInfo`
+(empty request, exact 16-byte response: status, scope, PID, addressBits).
+The frontend accepts only matching guest scope/PID and 32 or 64 address bits.
+It opens no host process handle for guest targets, installs no host PID monitor,
+and uses backend-provided width for disassembly. Guest event ownership is the
+authenticated backend's responsibility, not a host Toolhelp lookup. Backend
+reuse requires identical path, arguments and scope. Guest `veh_launch` is
+explicitly unsupported until guest process creation and stopOnEntry are wired.
+
+`py -3 tools/run_tests.py test_guest_backend.py --jobs 1 --timeout 60` builds on
+the host-only `guest_backend_fixture` target to check PID collisions, metadata
+failures, registered scope, bitness and unsupported pause/terminate handling.
+Attach/launch replace sessions and remain excluded from batch and breakpoint
+actions; existing inspect commands retain their ordinary batch/action routes.

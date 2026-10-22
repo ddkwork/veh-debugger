@@ -149,6 +149,7 @@ public:
 	struct ExternalAgent {
 		std::string path;
 		std::vector<std::string> args; // appended after --pid/--pipe
+		bool guestTarget = false; // guest PIDs/paths never name host objects
 	};
 	// nullptr agent: inject the VEH DLL. Otherwise start or reuse that agent.
 	bool Attach(uint32_t pid, const ExternalAgent* agent = nullptr);
@@ -164,6 +165,9 @@ public:
 		bool Supports(IpcCommand cmd) const { return !reported || IsCommandSupported(commands, cmd); }
 	};
 	void QueryBackendInfo();   // after Ready
+    bool CompleteBackendAttach(); // after Ready/capabilities, before reporting success
+    bool IsGuestTarget() const { return guestTarget_; }
+    uint32_t TargetAddressBits() const { return targetAddressBits_; }
 	const BackendInfo& GetBackendInfo() const { return backendInfo_; }
 	struct LaunchOptions {
 		std::string program;
@@ -496,6 +500,8 @@ private:
 		std::string path;
 		std::wstring pipe;
 		uint32_t processId;
+		std::vector<std::string> args;
+		bool guestTarget;
 	};
 	std::map<uint32_t, RunningAgent> externalAgents_; // target pid -> agent we started
 	BackendInfo backendInfo_;
@@ -507,6 +513,9 @@ private:
 	// Session state
 	uint32_t targetPid_ = 0;
 	HANDLE targetProcess_ = nullptr;
+	bool guestTarget_ = false;
+	bool externalAttachPending_ = false;
+	uint32_t targetAddressBits_ = 0;
 	std::string lastAttachError_;   // categorized reason for the last Attach() failure
 	std::atomic<bool> attached_{false};
 	std::atomic<bool> launchedByUs_{false};

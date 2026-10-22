@@ -134,6 +134,7 @@ enum class IpcCommand : uint32_t {
 
 	// Lifecycle
 	GetCapabilities        = 0x00FC,  // backend identity and per-command support (older peers answer InvalidArgs)
+	GetTargetInfo          = 0x00FD,  // guest PID namespace and address width; empty request
 	Heartbeat              = 0x00FE,
 	Detach                 = 0x00F0,
 	Terminate              = 0x00F1,  // terminate the target from inside (bypasses external OpenProcess locks)
@@ -1714,6 +1715,19 @@ constexpr uint32_t kCapStopsThreads        = 1u << 0;  // breakpoints/steps can 
 constexpr uint32_t kCapHiddenBreakpoints   = 1u << 1;  // breakpoints do not modify target code bytes
 constexpr uint32_t kCapNoTargetFootprint   = 1u << 2;  // nothing is injected into the target process
 constexpr uint32_t kCapExecWriteTracking   = 1u << 3;  // writes to executed code are observed completely
+
+// Guest targets require explicit frontend scope selection and this metadata.
+// A guest PID must never be passed to host process/thread APIs. Backends validate
+// the bound process identity on every query; failure publishes no metadata.
+constexpr uint32_t kCapGuestTarget = 1u << 4;
+enum class IpcTargetScope : uint32_t { Host = 0, Guest = 1 };
+struct GetTargetInfoResponse {
+    IpcStatus status;
+    IpcTargetScope scope;
+    uint32_t pid;
+    uint32_t addressBits; // exactly 32 or 64 on success
+};
+static_assert(sizeof(GetTargetInfoResponse) == 16);
 
 struct GetCapabilitiesResponse {
 	IpcStatus  status;
