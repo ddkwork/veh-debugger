@@ -4,7 +4,6 @@
 #include <windows.h>
 #include <chrono>
 #include <cstdio>
-#include <thread>
 
 namespace veh {
 namespace {
@@ -15,36 +14,46 @@ uint64_t NowMs()
 		std::chrono::steady_clock::now().time_since_epoch()).count());
 }
 
+// Overlapped: a read waits for data or the timeout, without polling.
 class PipeTransport : public KdTransport {
 public:
-	explicit PipeTransport(HANDLE h) : h_(h) {}
-	~PipeTransport() override { CloseHandle(h_); }
+	explicit PipeTransport(HANDLE h) : h_(h), ev_(CreateEventW(nullptr, TRUE, FALSE, nullptr)) {}
+	~PipeTransport() override
+	{
+		CloseHandle(h_);
+		if (ev_)
+			CloseHandle(ev_);
+	}
 	bool Write(const void* data, size_t size) override
 	{
 		DWORD n = 0;
-		return WriteFile(h_, data, static_cast<DWORD>(size), &n, nullptr) && n == size;
+		return Io(false, const_cast<void*>(data), size, INFINITE, &n) && n == size;
 	}
 	int Read(uint8_t* buffer, size_t max, uint32_t timeout_ms) override
 	{
-		const uint64_t end = NowMs() + timeout_ms;
-		for (;;) {
-			DWORD avail = 0;
-			if (!PeekNamedPipe(h_, nullptr, 0, nullptr, &avail, nullptr))
-				return -1;
-			if (avail) {
-				DWORD n = 0;
-				if (!ReadFile(h_, buffer, static_cast<DWORD>(avail < max ? avail : max), &n, nullptr))
-					return -1;
-				return static_cast<int>(n);
-			}
-			if (NowMs() >= end)
-				return 0;
-			std::this_thread::sleep_for(std::chrono::milliseconds(1));
-		}
+		DWORD n = 0;
+		return Io(true, buffer, max, timeout_ms, &n) ? static_cast<int>(n) : -1;
 	}
 
 private:
+	bool Io(bool read, void* data, size_t size, DWORD timeout_ms, DWORD* done)
+	{
+		OVERLAPPED ov = {};
+		ov.hEvent = ev_;
+		ResetEvent(ev_);
+		const BOOL ok = read ? ReadFile(h_, data, static_cast<DWORD>(size), nullptr, &ov)
+			: WriteFile(h_, data, static_cast<DWORD>(size), nullptr, &ov);
+		if (!ok && GetLastError() != ERROR_IO_PENDING)
+			return false;
+		if (!ok && WaitForSingleObject(ev_, timeout_ms) == WAIT_TIMEOUT)
+			CancelIoEx(h_, &ov); // nothing arrived in time: 0 bytes
+		if (GetOverlappedResult(h_, &ov, done, TRUE))
+			return true;
+		return GetLastError() == ERROR_OPERATION_ABORTED;
+	}
+
 	HANDLE h_;
+	HANDLE ev_;
 };
 
 class ComTransport : public KdTransport {
@@ -205,7 +214,8 @@ std::unique_ptr<KdTransport> OpenKdTransport(const std::string& kind, const std:
 		std::string path = address;
 		if (kind == "com" && path.rfind("\\\\.\\", 0) != 0)
 			path = "\\\\.\\" + path; // COM10 and up need the device prefix
-		HANDLE h = CreateFileA(path.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+		HANDLE h = CreateFileA(path.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
+			kind == "pipe" ? FILE_FLAG_OVERLAPPED : 0, nullptr);
 		if (h == INVALID_HANDLE_VALUE) {
 			*error = "open " + path + " failed: " + std::to_string(GetLastError()) +
 				(GetLastError() == ERROR_PIPE_BUSY ? " (another client is connected)" : "");

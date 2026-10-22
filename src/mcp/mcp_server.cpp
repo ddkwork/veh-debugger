@@ -39,7 +39,7 @@ namespace veh {
 constexpr unsigned kLite = 1, kInteractive = 2, kCapture = 4, kFullProfile = ~0u;
 
 McpServer::McpServer(std::string toolProfile)
-	: toolProfile_(std::move(toolProfile)) {
+	: toolProfile_(std::move(toolProfile)), eventsReady_(CreateEventW(nullptr, FALSE, FALSE, nullptr)) {
 	StartRetryThread();
 }
 McpServer::~McpServer() {
@@ -47,6 +47,7 @@ McpServer::~McpServer() {
 	// Deferred BP 워커 정리 (session_ 멤버가 아직 유효할 때 stop+join).
 	// 단일 영속 워커라 여기서만 join하며, 이후 reader가 NotifyRetry해도 재기동 없음.
 	StopRetryThread();
+	if (eventsReady_) CloseHandle(eventsReady_);
 }
 
 void McpServer::SetTransport(dap::Transport* transport) {
@@ -64,9 +65,7 @@ void McpServer::Run() {
 	// Wire up close callback so stdin EOF stops the server loop
 	auto* mcpTransport = dynamic_cast<dap::McpStdioTransport*>(transport_);
 	if (mcpTransport) {
-		mcpTransport->SetCloseCallback([this]() {
-			running_ = false;
-		});
+		mcpTransport->SetCloseCallback([this]() { Stop(); });
 	}
 
 	if (!transport_->Start()) {
@@ -76,7 +75,7 @@ void McpServer::Run() {
 
 	// Open parent process handle for exit detection.
 	// If stdin is NUL/console (not a pipe), ReadFile never unblocks on parent
-	// exit, so we poll the parent handle as a second-layer termination guard.
+	// exit, so the parent handle is a second-layer termination guard.
 	HANDLE hParent = NULL;
 	DWORD parentPid = GetParentPid();
 	if (parentPid) {
@@ -84,14 +83,17 @@ void McpServer::Run() {
 		LOG_INFO("Watching parent PID %u for exit", (unsigned)parentPid);
 	}
 
+	// Queued notifications and auto-continues are delivered as soon as they
+	// are queued (eventsReady_), not on a timer.
 	while (running_) {
-		if (hParent && WaitForSingleObject(hParent, 0) == WAIT_OBJECT_0) {
+		const HANDLE handles[2] = { eventsReady_, hParent };
+		const DWORD result = WaitForMultipleObjects(hParent ? 2 : 1, handles, FALSE, INFINITE);
+		if (result == WAIT_OBJECT_0 + 1) {
 			LOG_INFO("Parent process exited, stopping MCP server");
 			running_ = false;
 			break;
 		}
 		FlushEvents();
-		Sleep(100);
 	}
 
 	if (hParent) CloseHandle(hParent);
@@ -100,6 +102,7 @@ void McpServer::Run() {
 
 void McpServer::Stop() {
 	running_ = false;
+	SetEvent(eventsReady_);
 }
 
 // --- JSON-RPC message handling ---
@@ -712,7 +715,7 @@ void McpServer::RetryPendingBreakpointsOnce() {
 			snprintf(buf, sizeof(buf), "Deferred breakpoint #%u bound: %s -> 0x%llX",
 				bpResult.id, label.c_str(), addr);
 			std::lock_guard<std::mutex> lock(eventMutex_);
-			pendingEvents_.push({"notifications/logging", {{"level", "info"}, {"logger", "veh-debugger"}, {"data", buf}}});
+			pendingEvents_.push({"notifications/logging", {{"level", "info"}, {"logger", "veh-debugger"}, {"data", buf}}}); SetEvent(eventsReady_);
 		}
 		if (!anyResolved) return;  // 이번 라운드에 아무것도 못 풀면 종료
 	}
@@ -743,7 +746,7 @@ void McpServer::OnIpcEvent(uint32_t eventId, const uint8_t* payload, uint32_t si
 					e->address, e->threadId);
 				{
 					std::lock_guard<std::mutex> lock(eventMutex_);
-					pendingEvents_.push({"notifications/logging", {{"level", "info"}, {"logger", "veh-debugger"}, {"data", buf}}});
+					pendingEvents_.push({"notifications/logging", {{"level", "info"}, {"logger", "veh-debugger"}, {"data", buf}}}); SetEvent(eventsReady_);
 				}
 			} else {
 				// Look up BpMapping for condition/hitCondition/logMessage
@@ -825,9 +828,9 @@ void McpServer::OnIpcEvent(uint32_t eventId, const uint8_t* payload, uint32_t si
 				if (!shouldStop) {
 					std::lock_guard<std::mutex> lock(eventMutex_);
 					if (!logOutput.empty()) {
-						pendingEvents_.push({"notifications/logging", {{"level", "info"}, {"logger", "logpoint"}, {"data", logOutput}}});
+						pendingEvents_.push({"notifications/logging", {{"level", "info"}, {"logger", "logpoint"}, {"data", logOutput}}}); SetEvent(eventsReady_);
 					}
-					pendingAutoContinue_.push(e->threadId);
+					pendingAutoContinue_.push(e->threadId); SetEvent(eventsReady_);
 				} else {
 					// Check for BP action (auto-execute commands on hit)
 					json action;
@@ -846,11 +849,11 @@ void McpServer::OnIpcEvent(uint32_t eventId, const uint8_t* payload, uint32_t si
 							e->breakpointId, e->address, e->threadId);
 						{
 							std::lock_guard<std::mutex> lock(eventMutex_);
-							pendingEvents_.push({"notifications/logging", {{"level", "info"}, {"logger", "veh-debugger"}, {"data", buf}}});
+							pendingEvents_.push({"notifications/logging", {{"level", "info"}, {"logger", "veh-debugger"}, {"data", buf}}}); SetEvent(eventsReady_);
 						}
 						{
 							std::lock_guard<std::mutex> lock(eventMutex_);
-							pendingBreakpointActions_.push({e->threadId, std::move(action)});
+							pendingBreakpointActions_.push({e->threadId, std::move(action)}); SetEvent(eventsReady_);
 						}
 					} else {
 						// Normal stop
@@ -859,7 +862,7 @@ void McpServer::OnIpcEvent(uint32_t eventId, const uint8_t* payload, uint32_t si
 							e->breakpointId, e->address, e->threadId);
 						{
 							std::lock_guard<std::mutex> lock(eventMutex_);
-							pendingEvents_.push({"notifications/logging", {{"level", "info"}, {"logger", "veh-debugger"}, {"data", buf}}});
+							pendingEvents_.push({"notifications/logging", {{"level", "info"}, {"logger", "veh-debugger"}, {"data", buf}}}); SetEvent(eventsReady_);
 						}
 						std::string bpType;
 						if (e->breakpointId >= 10001) bpType = "hardware";
@@ -880,7 +883,7 @@ void McpServer::OnIpcEvent(uint32_t eventId, const uint8_t* payload, uint32_t si
 				e->address, e->threadId);
 			{
 				std::lock_guard<std::mutex> lock(eventMutex_);
-				pendingEvents_.push({"notifications/logging", {{"level", "info"}, {"logger", "veh-debugger"}, {"data", buf}}});
+				pendingEvents_.push({"notifications/logging", {{"level", "info"}, {"logger", "veh-debugger"}, {"data", buf}}}); SetEvent(eventsReady_);
 			}
 			// Signal synchronous step waiters.
 			{
@@ -901,7 +904,7 @@ void McpServer::OnIpcEvent(uint32_t eventId, const uint8_t* payload, uint32_t si
 	case IpcEvent::Paused: {
 		{
 			std::lock_guard<std::mutex> lock(eventMutex_);
-			pendingEvents_.push({"notifications/logging", {{"level", "info"}, {"logger", "veh-debugger"}, {"data", "Target paused"}}});
+			pendingEvents_.push({"notifications/logging", {{"level", "info"}, {"logger", "veh-debugger"}, {"data", "Target paused"}}}); SetEvent(eventsReady_);
 		}
 		session_.SignalStop("pause", 0, 0, 0);
 		break;
@@ -914,7 +917,7 @@ void McpServer::OnIpcEvent(uint32_t eventId, const uint8_t* payload, uint32_t si
 			LOG_INFO("%s", buf);
 			{
 				std::lock_guard<std::mutex> lock(eventMutex_);
-				pendingEvents_.push({"notifications/logging", {{"level", "info"}, {"logger", "veh-debugger"}, {"data", buf}}});
+				pendingEvents_.push({"notifications/logging", {{"level", "info"}, {"logger", "veh-debugger"}, {"data", buf}}}); SetEvent(eventsReady_);
 			}
 			session_.SignalStop("exit", 0, 0, 0);
 		}
@@ -945,7 +948,7 @@ void McpServer::OnIpcEvent(uint32_t eventId, const uint8_t* payload, uint32_t si
 					e->exceptionCode, e->address, e->threadId);
 				{
 					std::lock_guard<std::mutex> lock(eventMutex_);
-					pendingEvents_.push({"notifications/logging", {{"level", "info"}, {"logger", "veh-debugger"}, {"data", buf}}});
+					pendingEvents_.push({"notifications/logging", {{"level", "info"}, {"logger", "veh-debugger"}, {"data", buf}}}); SetEvent(eventsReady_);
 				}
 				// Auto-continue with pass_exception=true
 				session_.Continue(e->threadId, true);
@@ -957,7 +960,7 @@ void McpServer::OnIpcEvent(uint32_t eventId, const uint8_t* payload, uint32_t si
 				e->exceptionCode, e->address, e->threadId, e->description);
 			{
 				std::lock_guard<std::mutex> lock(eventMutex_);
-				pendingEvents_.push({"notifications/logging", {{"level", "warning"}, {"logger", "veh-debugger"}, {"data", buf}}});
+				pendingEvents_.push({"notifications/logging", {{"level", "warning"}, {"logger", "veh-debugger"}, {"data", buf}}}); SetEvent(eventsReady_);
 			}
 			session_.SignalStop("exception", e->address, e->threadId, 0);
 		}
@@ -977,7 +980,7 @@ void McpServer::OnIpcEvent(uint32_t eventId, const uint8_t* payload, uint32_t si
 				e->name, (unsigned long long)e->baseAddress, e->threadId);
 			{
 				std::lock_guard<std::mutex> lock(eventMutex_);
-				pendingEvents_.push({"notifications/logging", {{"level", "info"}, {"logger", "veh-debugger"}, {"data", buf}}});
+				pendingEvents_.push({"notifications/logging", {{"level", "info"}, {"logger", "veh-debugger"}, {"data", buf}}}); SetEvent(eventsReady_);
 			}
 			session_.SignalStop("module-load", e->baseAddress, e->threadId, 0, e->name);
 		}

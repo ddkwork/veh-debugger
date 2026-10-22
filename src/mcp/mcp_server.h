@@ -245,6 +245,7 @@ private:
 	struct PendingBreakpointAction { uint32_t threadId; json steps; };
 	std::queue<PendingBreakpointAction> pendingBreakpointActions_;
 	std::mutex eventMutex_;
+	HANDLE eventsReady_ = nullptr; // set with every push to the queues above; the main loop waits on it
 	void FlushEvents();
 	void StoreBreakpointAction(uint32_t breakpointId, const json& action);
 

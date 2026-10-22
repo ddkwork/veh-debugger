@@ -445,10 +445,8 @@ void PipeClient::HeartbeatThread() {
 	LOG_DEBUG("Heartbeat thread started (interval=10s, timeout=30s)");
 
 	while (heartbeatRunning_ && connected_) {
-		// 10초 대기
-		for (int i = 0; i < 100 && heartbeatRunning_ && connected_; ++i) {
-			Sleep(100);
-		}
+		// 10초 대기 (StopHeartbeat/Disconnect가 stopEvent_로 즉시 깨운다)
+		if (!stopEvent_ || WaitForSingleObject(stopEvent_, 10000) != WAIT_TIMEOUT) break;
 		if (!heartbeatRunning_ || !connected_) break;
 		{
 			std::lock_guard<std::mutex> lock(requestStateMutex_);
