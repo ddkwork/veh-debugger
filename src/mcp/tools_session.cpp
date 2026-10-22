@@ -344,10 +344,17 @@ json McpServer::ToolContinue(const json& args) {
 		}
 	}
 
+	// A stop reported for a thread that runs again (resumed meanwhile by any
+	// command) is over: a trace asked right after it would find no stopped thread.
+	const auto stillStopped = [this](const StopEvent& ev) {
+		return ev.threadId == 0 || ev.reason == "exit" || !session_.IsAttached() ||
+			!session_.GetBackendInfo().Supports(IpcCommand::IsThreadStopped) || session_.IsThreadStopped(ev.threadId);
+	};
+
 	// Check for cached stop event before sending Continue
 	if (wait && !passException) {
 		auto cached = session_.ConsumeCachedStop();
-		if (cached && IsCurrentStopEvent(*cached)) {
+		if (cached && IsCurrentStopEvent(*cached) && stillStopped(*cached)) {
 			json ret = {
 				{"stopped", true},
 				{"reason", cached->reason},
@@ -400,7 +407,7 @@ json McpServer::ToolContinue(const json& args) {
 		if (stopEvent.sessionChanged) {
 			return {{"error", "Debug session changed while waiting for a stop event"}};
 		}
-		if (IsCurrentStopEvent(stopEvent)) break;
+		if (IsCurrentStopEvent(stopEvent) && stillStopped(stopEvent)) break;
 	}
 
 	json ret = {
