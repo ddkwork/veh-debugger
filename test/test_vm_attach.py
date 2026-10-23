@@ -36,6 +36,10 @@ def run():
             assert client.tool('veh_attach',{**vm,'agent_args':['--metadata',mode]}).get('success')
             result=client.tool('veh_toolbox',{'operation':'call','tool':'veh_processes','arguments':{}})['result']
             assert 'error' in result,(mode,result)
+        for mode in ('machine-thread-error','machine-thread-short','machine-thread-name'):
+            assert client.tool('veh_attach',{**vm,'agent_args':['--metadata',mode]}).get('success')
+            result=client.tool('veh_toolbox',{'operation':'call','tool':'veh_threads','arguments':{}})['result']
+            assert 'error' in result,(mode,result)
         for mode in ('machine-wrong-pid','machine-bad-width','machine-wrong-scope','machine-guest-cap','machine-truncated'):
             failed=client.tool('veh_attach',{**vm,'agent_args':['--metadata',mode]})
             assert 'error' in failed,(mode,failed)

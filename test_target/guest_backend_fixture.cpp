@@ -156,12 +156,19 @@ int wmain(int argc, wchar_t** argv) {
                 ?sizeof(processes.header)+sizeof(processes.entries[0]):sizeof(processes);
             if(!send(pipe,header.command,&processes,static_cast<uint32_t>(length)))break;
         } else if (command == veh::IpcCommand::GetThreads) {
+            if(mode==L"machine-thread-error") {
+                if(!reply(pipe,header.command,veh::IpcStatus::Unsupported))break;
+                continue;
+            }
             struct { veh::GetThreadsResponse header; veh::ThreadInfo thread; } threads{};
-            threads.header.status = veh::IpcStatus::Ok; threads.header.count = 1; threads.thread.id = 77;
+            threads.header.status = veh::IpcStatus::Ok;
+            threads.header.count = mode==L"machine-thread-short"?2:1;
+            threads.thread.id = 77;
             if (mode == L"silent-detach" || mode == L"late-detach" || mode == L"host-cap")
                 sprintf_s(threads.thread.name, "fixture-agent:%lu", GetCurrentProcessId());
             if (mode == L"trace") strcpy_s(threads.thread.name,
                 continueRequests || pauseRequests ? "unexpected-resume-or-pause" : "untouched");
+            if(mode==L"machine-thread-name")std::memset(threads.thread.name,'A',sizeof(threads.thread.name));
             if (!reply(pipe, header.command, threads)) break;
         } else if (command == veh::IpcCommand::ReadMemory && bytes.size() == sizeof(veh::ReadMemoryRequest)) {
             veh::ReadMemoryRequest request{}; memcpy(&request, bytes.data(), sizeof(request));

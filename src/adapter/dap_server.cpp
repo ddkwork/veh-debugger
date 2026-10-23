@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <sstream>
 #include <algorithm>
+#include <cstring>
 #include <fstream>
 #include <set>
 
@@ -1301,33 +1302,62 @@ void DapServer::OnPause(const Request& req) {
 // --- State Queries ---
 
 void DapServer::OnThreads(const Request& req) {
-	std::vector<uint8_t> respData;
-	json threadsJson = json::array();
-
-	if (ipcTransport_->SendAndReceive(IpcCommand::GetThreads, nullptr, 0, respData)) {
-		if (respData.size() >= sizeof(GetThreadsResponse)) {
-			auto* hdr = reinterpret_cast<const GetThreadsResponse*>(respData.data());
-			auto* threads = reinterpret_cast<const ThreadInfo*>(respData.data() + sizeof(GetThreadsResponse));
-			uint32_t maxCount = (uint32_t)((respData.size() - sizeof(GetThreadsResponse)) / sizeof(ThreadInfo));
-			uint32_t count = std::min(hdr->count, maxCount);
-			for (uint32_t i = 0; i < count; i++) {
-				Thread t;
-				t.id = threads[i].id;
-				t.name = threads[i].name[0] ? threads[i].name : ("Thread " + std::to_string(threads[i].id));
-				threadsJson.push_back(t.ToJson());
-			}
-		}
-	}
-
-	if (threadsJson.empty()) {
-		// 최소한 메인 스레드 하나는 리턴
-		threadsJson.push_back(Thread{1, "Main Thread"}.ToJson());
-	}
-
 	Response resp;
 	resp.request_seq = req.seq;
 	resp.command = "threads";
-	resp.success = true;
+	std::vector<uint8_t> data;
+	if (!ipcTransport_->SendAndReceive(IpcCommand::GetThreads, nullptr, 0, data)) {
+		resp.success = false;
+		resp.message = "GetThreads IPC failed";
+		SendResponse(resp);
+		return;
+	}
+	if (data.size() < sizeof(IpcStatus)) {
+		resp.success = false;
+		resp.message = "GetThreads response is incomplete";
+		SendResponse(resp);
+		return;
+	}
+	IpcStatus status{};
+	std::memcpy(&status, data.data(), sizeof(status));
+	if (status != IpcStatus::Ok) {
+		resp.success = false;
+		resp.message = "GetThreads backend status " + std::to_string(static_cast<uint32_t>(status));
+		SendResponse(resp);
+		return;
+	}
+	GetThreadsResponse header{};
+	if (data.size() < sizeof(header)) {
+		resp.success = false;
+		resp.message = "GetThreads response is incomplete";
+		SendResponse(resp);
+		return;
+	}
+	std::memcpy(&header, data.data(), sizeof(header));
+	const size_t payloadSize = data.size() - sizeof(header);
+	if (payloadSize % sizeof(ThreadInfo) != 0 ||
+		header.count != payloadSize / sizeof(ThreadInfo)) {
+		resp.success = false;
+		resp.message = "GetThreads response length mismatch";
+		SendResponse(resp);
+		return;
+	}
+	json threadsJson = json::array();
+	for (uint32_t i = 0; i < header.count; ++i) {
+		ThreadInfo info{};
+		std::memcpy(&info, data.data() + sizeof(header) + static_cast<size_t>(i) * sizeof(info), sizeof(info));
+		const auto* end = static_cast<const char*>(std::memchr(info.name, '\0', sizeof(info.name)));
+		if (!end) {
+			resp.success = false;
+			resp.message = "GetThreads name is unterminated";
+			SendResponse(resp);
+			return;
+		}
+		Thread thread;
+		thread.id = info.id;
+		thread.name = info.name[0] ? std::string(info.name, static_cast<size_t>(end - info.name)) : "Thread " + std::to_string(info.id);
+		threadsJson.push_back(thread.ToJson());
+	}
 	resp.body = {{"threads", threadsJson}};
 	SendResponse(resp);
 }

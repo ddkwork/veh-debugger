@@ -4,6 +4,7 @@
 #include "common/logger.h"
 #include <sstream>
 #include <algorithm>
+#include <cstring>
 #include <filesystem>
 #include <TlHelp32.h>
 #include <Psapi.h>
@@ -994,19 +995,28 @@ std::vector<ThreadEntry> DebugSession::GetThreads(std::string* error) {
 		return result;
 	}
 
-	if (respData.size() < sizeof(GetThreadsResponse)) { if (error) *error = detail; return result; }
-	auto* resp = reinterpret_cast<const GetThreadsResponse*>(respData.data());
-	if (resp->status != IpcStatus::Ok) return result;
+	// The whole list or nothing: the count must match the payload exactly
+	// (no short or extra rows) and every name must end inside its field.
+	GetThreadsResponse header{};
+	if (respData.size() < sizeof(header)) { if (error) *error = detail; return result; }
+	std::memcpy(&header, respData.data(), sizeof(header));
+	const size_t payloadSize = respData.size() - sizeof(header);
+	if (payloadSize % sizeof(ThreadInfo) != 0 || header.count != payloadSize / sizeof(ThreadInfo)) {
+		if (error) *error = "GetThreads: thread count does not match the backend payload";
+		return result;
+	}
 
-	auto* infos = reinterpret_cast<const ThreadInfo*>(respData.data() + sizeof(GetThreadsResponse));
-	uint32_t count = resp->count;
-	const size_t maxItems = (respData.size() > sizeof(GetThreadsResponse))
-		? (respData.size() - sizeof(GetThreadsResponse)) / sizeof(ThreadInfo) : 0;
-	if (count > maxItems) { if (error) *error = detail; return result; }
-
-	result.reserve(count);
-	for (uint32_t i = 0; i < count; i++) {
-		result.push_back({infos[i].id, std::string(infos[i].name, strnlen_s(infos[i].name, sizeof(infos[i].name)))});
+	result.reserve(header.count);
+	for (uint32_t i = 0; i < header.count; ++i) {
+		ThreadInfo info{};
+		std::memcpy(&info, respData.data() + sizeof(header) + static_cast<size_t>(i) * sizeof(info), sizeof(info));
+		const auto* end = static_cast<const char*>(std::memchr(info.name, '\0', sizeof(info.name)));
+		if (!end) {
+			result.clear();
+			if (error) *error = "GetThreads: unterminated thread name";
+			return result;
+		}
+		result.push_back({info.id, std::string(info.name, static_cast<size_t>(end - info.name))});
 	}
 	return result;
 }
