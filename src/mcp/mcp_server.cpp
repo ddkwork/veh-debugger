@@ -1741,11 +1741,14 @@ std::vector<McpServer::ToolDef> McpServer::BuildAllToolsList() {
 		 }}, {"required", json::array({"threadId", "register"})}}}}),
 
 		Tool(&McpServer::ToolTraceMemory, "trace", 0, true,
-			{{"name", "veh_trace_memory"}, {"description", "Trace memory writes: sets a temporary hardware data breakpoint, resumes the process, and waits for any thread to write to the address. Returns the writing instruction, thread ID, and old/new values. Uses DR0-DR3 (1 slot occupied during trace)."},
+			{{"name", "veh_trace_memory"}, {"description", "Trace memory writes: sets a temporary hardware data breakpoint, resumes the process, and waits for any thread to write to the address. Returns the writing instruction, thread ID, and old/new values. Uses DR0-DR3 (1 slot occupied during trace). With duration_ms (collect mode, like Cheat Engine's 'find out what writes/accesses'): nothing stops; for duration_ms every instruction writing (or reading/writing) the address is counted, and each is returned with its hit count, first thread and registers at its first hit."},
 		 {"inputSchema", {{"type", "object"}, {"properties", {
 			{"address", {{"type", "string"}, {"description", "Memory address to watch (hex or module+RVA)"}}},
 			{"size", {{"type", "integer"}, {"enum", json::array({1, 2, 4, 8})}, {"description", "Watch size in bytes (default: 4)"}}},
-			{"timeout_ms", {{"type", "integer"}, {"description", "Max wait time in ms (default: 10000, max: 60000)"}}}
+			{"timeout_ms", {{"type", "integer"}, {"description", "Max wait time in ms (default: 10000, max: 60000)"}}},
+			{"duration_ms", {{"type", "integer"}, {"description", "Collect mode: watch for this long (10..60000 ms) without stopping and count every accessing instruction"}}},
+			{"access", {{"type", "string"}, {"enum", json::array({"write", "readwrite"})}, {"description", "Collect mode: writes only (default) or reads and writes"}}},
+			{"max_entries", {{"type", "integer"}, {"description", "Collect mode: distinct instructions listed (default 64, max 1024); hits of the rest are counted in dropped_hits"}}}
 		 }}, {"required", json::array({"address"})}}}}),
 
 		Tool(&McpServer::ToolResolveImports, "trace", 0, true,

@@ -444,6 +444,23 @@ public:
 	};
 	TraceMemState traceMem_;
 
+	// TraceMemoryCollect: the temp HW BP stays; every hit is counted per
+	// instruction in the exception handler (fixed table, no allocation).
+	struct TraceCollectState {
+		static constexpr uint32_t kMaxEntries = 1024;
+		std::atomic<bool> active{false};
+		uint32_t hwBpId = 0;
+		uint8_t access = 0;          // kTraceAccess* bits the breakpoint reports
+		uint32_t maxEntries = 64;
+		std::atomic<uint64_t> total{0};
+		std::atomic<uint64_t> dropped{0};
+		std::atomic_flag busy = ATOMIC_FLAG_INIT;
+		uint32_t count = 0;
+		TraceMemoryCollectEntry entries[kMaxEntries];
+		void Record(uint64_t ip, uint32_t tid, const CONTEXT& ctx);
+	};
+	TraceCollectState traceCollect_;
+
 	// ResolveImport: step from thunk until RIP enters a loaded DLL
 	struct ImportResolveState {
 		std::atomic<bool> active{false};

@@ -96,6 +96,7 @@ enum class IpcCommand : uint32_t {
 	ResolveImport          = 0x0072,
 	TraceCalls             = 0x0073,
 	TraceBasicBlocks       = 0x0074,
+	TraceMemoryCollect     = 0x0075,  // every instruction touching an address for a while, without stopping
 
 	// System inspection: machine-wide state outside the target process. Only
 	// backends running below the OS serve these; others answer Unsupported.
@@ -553,6 +554,36 @@ struct TraceMemoryResponse {
 	uint64_t instructionAddress;  // instruction that triggered the write
 	uint64_t oldValue;
 	uint64_t newValue;
+};
+
+// Collect mode (veh_trace_memory duration_ms): the watch stays for durationMs
+// and every hit is counted per instruction; nothing stops.
+static constexpr uint8_t kTraceAccessWrite = 1;
+static constexpr uint8_t kTraceAccessRead = 2;
+static constexpr uint8_t kTraceEntryAfterInstruction = 0x01; // instructionAddress follows the access (a DR trap)
+struct TraceMemoryCollectRequest {
+	uint64_t address;
+	uint32_t size;        // bytes watched (a DR backend: 1, 2, 4 or 8)
+	uint32_t durationMs;
+	uint8_t  access;      // kTraceAccessWrite, or kTraceAccessWrite | kTraceAccessRead
+	uint8_t  reserved[3];
+	uint32_t maxEntries;  // distinct instructions kept (0: backend default)
+};
+struct TraceMemoryCollectEntry {
+	uint64_t instructionAddress;
+	uint64_t hits;
+	uint32_t firstThreadId;
+	uint8_t  access;      // kTraceAccess* bits seen
+	uint8_t  flags;       // kTraceEntry*
+	uint8_t  reserved[2];
+	uint64_t regs[16];    // rax..r15 (RegisterSet order) at the first hit
+	uint64_t rflags;
+};
+struct TraceMemoryCollectResponse { // followed by TraceMemoryCollectEntry[entryCount]
+	IpcStatus status;
+	uint32_t entryCount;
+	uint64_t totalHits;
+	uint64_t droppedHits; // hits of instructions past maxEntries (counted, not listed)
 };
 
 // --- Import resolution ---

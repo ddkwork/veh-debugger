@@ -1483,6 +1483,32 @@ DebugSession::TraceMemResult DebugSession::TraceMemoryWrite(uint64_t address, ui
 	return result;
 }
 
+DebugSession::TraceCollectResult DebugSession::TraceMemoryCollect(uint64_t address, uint32_t size,
+	uint32_t durationMs, uint8_t access, uint32_t maxEntries) {
+	TraceCollectResult result;
+	TraceMemoryCollectRequest req{};
+	req.address = address;
+	req.size = size;
+	req.durationMs = durationMs;
+	req.access = access;
+	req.maxEntries = maxEntries;
+	std::vector<uint8_t> respData;
+	if (!ipcTransport_->SendAndReceive(IpcCommand::TraceMemoryCollect, &req, sizeof(req), respData,
+			static_cast<int>(durationMs) + 10000))
+		return result;
+	if (respData.size() < sizeof(TraceMemoryCollectResponse)) return result;
+	TraceMemoryCollectResponse head{};
+	memcpy(&head, respData.data(), sizeof(head));
+	result.ok = head.status == IpcStatus::Ok;
+	result.totalHits = head.totalHits;
+	result.droppedHits = head.droppedHits;
+	const size_t room = (respData.size() - sizeof(head)) / sizeof(TraceMemoryCollectEntry);
+	result.entries.resize(head.entryCount < room ? head.entryCount : room);
+	if (!result.entries.empty())
+		memcpy(result.entries.data(), respData.data() + sizeof(head), result.entries.size() * sizeof(TraceMemoryCollectEntry));
+	return result;
+}
+
 // --- Import resolution ---
 
 std::vector<DebugSession::ImportEntry> DebugSession::ResolveImports(

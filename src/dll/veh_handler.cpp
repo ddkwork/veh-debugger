@@ -2585,6 +2585,12 @@ LONG VehHandler::HandleException(PEXCEPTION_POINTERS info) {
 					// DR6 해당 비트 클리어
 					info->ContextRecord->Dr6 &= ~(1ULL << slot);
 
+					// TraceMemoryCollect: count it and run on (the breakpoint stays)
+					if (traceCollect_.active.load(std::memory_order_acquire) && hwbp->id == traceCollect_.hwBpId) {
+						traceCollect_.Record(addr, tid, *info->ContextRecord);
+						return EXCEPTION_CONTINUE_EXECUTION;
+					}
+
 					// TraceMemory: if this is our temp HW BP, record result and skip NotifyAndWait
 					if (traceMem_.active.load(std::memory_order_acquire) && hwbp->id == traceMem_.hwBpId) {
 						// Read new value at watched address
@@ -2956,3 +2962,32 @@ bool VehHandler::TraceCallsState::IsTraced(uint64_t addr) const {
 }
 
 } // namespace veh
+
+void veh::VehHandler::TraceCollectState::Record(uint64_t ip, uint32_t tid, const CONTEXT& ctx) {
+	total.fetch_add(1, std::memory_order_relaxed);
+	while (busy.test_and_set(std::memory_order_acquire)) YieldProcessor();
+	uint32_t i = 0;
+	while (i < count && entries[i].instructionAddress != ip) ++i;
+	if (i < count) {
+		++entries[i].hits;
+	} else if (count < maxEntries && count < kMaxEntries) {
+		TraceMemoryCollectEntry& e = entries[count++];
+		e = {};
+		e.instructionAddress = ip;
+		e.hits = 1;
+		e.firstThreadId = tid;
+		e.access = access;
+		e.flags = kTraceEntryAfterInstruction; // a data breakpoint traps after the access
+#ifdef _WIN64
+		const uint64_t r[16] = { ctx.Rax, ctx.Rbx, ctx.Rcx, ctx.Rdx, ctx.Rsi, ctx.Rdi, ctx.Rbp, ctx.Rsp,
+			ctx.R8, ctx.R9, ctx.R10, ctx.R11, ctx.R12, ctx.R13, ctx.R14, ctx.R15 };
+#else
+		const uint64_t r[16] = { ctx.Eax, ctx.Ebx, ctx.Ecx, ctx.Edx, ctx.Esi, ctx.Edi, ctx.Ebp, ctx.Esp };
+#endif
+		memcpy(e.regs, r, sizeof(e.regs));
+		e.rflags = ctx.EFlags;
+	} else {
+		dropped.fetch_add(1, std::memory_order_relaxed);
+	}
+	busy.clear(std::memory_order_release);
+}

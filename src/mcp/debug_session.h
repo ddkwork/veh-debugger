@@ -320,6 +320,15 @@ public:
 		uint64_t newValue = 0;
 	};
 	TraceMemResult TraceMemoryWrite(uint64_t address, uint32_t size, uint32_t timeoutMs);
+	// Collect mode: every instruction touching the address for durationMs, counted (nothing stops).
+	struct TraceCollectResult {
+		bool ok = false;
+		uint64_t totalHits = 0;
+		uint64_t droppedHits = 0;
+		std::vector<TraceMemoryCollectEntry> entries;
+	};
+	TraceCollectResult TraceMemoryCollect(uint64_t address, uint32_t size, uint32_t durationMs, uint8_t access,
+		uint32_t maxEntries);
 
 	// Import resolution: step from thunk until RIP enters a DLL
 	struct ImportEntry {

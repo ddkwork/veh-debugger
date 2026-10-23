@@ -865,6 +865,7 @@ void PipeServer::HandleCommand(uint32_t command, const uint8_t* payload, uint32_
 	case IpcCommand::TraceCallers:
 	case IpcCommand::TraceRegister:
 	case IpcCommand::TraceMemory:
+	case IpcCommand::TraceMemoryCollect:
 	case IpcCommand::ResolveImport:
 	case IpcCommand::TraceCalls:
 	case IpcCommand::TraceBasicBlocks:
@@ -1954,6 +1955,54 @@ void PipeServer::HandleTraceCommand(uint32_t command, const uint8_t* payload, ui
 		SendResponse(command, &resp, sizeof(resp));
 		break;
 	}
+	case IpcCommand::TraceMemoryCollect: {
+		TraceMemoryCollectResponse head{};
+		head.status = IpcStatus::InvalidArgs;
+		TraceMemoryCollectRequest req{};
+		if (payloadSize >= sizeof(req)) memcpy(&req, payload, sizeof(req));
+		const bool sized = req.size == 1 || req.size == 2 || req.size == 4 || req.size == 8;
+		if (payloadSize < sizeof(req) || !sized || (req.address & (req.size - 1)) || !(req.access & kTraceAccessWrite)) {
+			SendResponse(command, &head, sizeof(head)); // a debug register watches 1/2/4/8 aligned bytes
+			return;
+		}
+		const HwBreakSize bpSize = req.size == 1 ? HwBreakSize::Byte : req.size == 2 ? HwBreakSize::Word
+			: req.size == 4 ? HwBreakSize::Dword : HwBreakSize::Qword;
+		const bool reads = (req.access & kTraceAccessRead) != 0;
+		auto& tc = VehHandler::Instance().traceCollect_;
+		tc.count = 0;
+		tc.total.store(0);
+		tc.dropped.store(0);
+		tc.access = reads ? (kTraceAccessRead | kTraceAccessWrite) : kTraceAccessWrite; // a read/write DR does not say which
+		tc.maxEntries = req.maxEntries ? req.maxEntries : 64;
+		const uint32_t bpId = HwBreakpointManager::Instance().Add(req.address, reads ? HwBreakType::ReadWrite : HwBreakType::Write, bpSize);
+		if (bpId == 0) {
+			head.status = IpcStatus::Error;
+			SendResponse(command, &head, sizeof(head));
+			return;
+		}
+		tc.hwBpId = bpId;
+		tc.active.store(true, std::memory_order_release);
+		ApplyHwBreakpointsToAllThreads();
+		VehHandler::Instance().ResumeAllStoppedThreads();
+		ThreadManager::Instance().ResumeAll();
+		const uint32_t duration = req.durationMs ? (req.durationMs > 60000 ? 60000 : req.durationMs) : 1000;
+		Sleep(duration); // the collection window itself
+		tc.active.store(false, std::memory_order_release);
+		HwBreakpointManager::Instance().Remove(bpId);
+		ApplyHwBreakpointsToAllThreads();
+		while (tc.busy.test_and_set(std::memory_order_acquire)) YieldProcessor();
+		std::vector<uint8_t> out(sizeof(head) + tc.count * sizeof(TraceMemoryCollectEntry));
+		head.status = IpcStatus::Ok;
+		head.entryCount = tc.count;
+		head.totalHits = tc.total.load();
+		head.droppedHits = tc.dropped.load();
+		memcpy(out.data(), &head, sizeof(head));
+		if (tc.count) memcpy(out.data() + sizeof(head), tc.entries, tc.count * sizeof(TraceMemoryCollectEntry));
+		tc.busy.clear(std::memory_order_release);
+		SendResponse(command, out.data(), static_cast<uint32_t>(out.size()));
+		return;
+	}
+
 	case IpcCommand::TraceMemory: {
 		if (payloadSize < sizeof(TraceMemoryRequest)) {
 			IpcStatus status = IpcStatus::InvalidArgs;
@@ -3114,7 +3163,8 @@ void PipeServer::HandleLifecycleCommand(uint32_t command, const uint8_t* payload
 			IpcCommand::Symbolize, IpcCommand::DisplayType, IpcCommand::TraceCallers,
 			IpcCommand::AllocateMemory, IpcCommand::FreeMemory, IpcCommand::ExecuteShellcode,
 			IpcCommand::QueryMemoryMap, IpcCommand::SearchMemory, IpcCommand::ProtectMemory, IpcCommand::ValueScan,
-			IpcCommand::TraceRegister, IpcCommand::TraceMemory, IpcCommand::ResolveImport, IpcCommand::TraceCalls,
+			IpcCommand::TraceRegister, IpcCommand::TraceMemory, IpcCommand::TraceMemoryCollect, IpcCommand::ResolveImport,
+			IpcCommand::TraceCalls,
 			IpcCommand::TraceBasicBlocks,
 			IpcCommand::GetCapabilities, IpcCommand::Heartbeat, IpcCommand::Detach, IpcCommand::Terminate,
 			IpcCommand::Shutdown,

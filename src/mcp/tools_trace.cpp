@@ -155,6 +155,45 @@ json McpServer::ToolTraceMemory(const json& args) {
 	int size = JsonInt(args, "size", 4);
 	if (size != 1 && size != 2 && size != 4 && size != 8) return {{"error", "size must be 1, 2, 4, or 8"}};
 
+	if (args.contains("duration_ms")) { // collect mode: every accessing instruction, nothing stops
+		int durationMs = JsonInt(args, "duration_ms", 1000);
+		if (durationMs < 10) durationMs = 10;
+		if (durationMs > 60000) durationMs = 60000;
+		const std::string access = args.value("access", "write");
+		if (access != "write" && access != "readwrite") return {{"error", "access must be write or readwrite"}};
+		int maxEntries = JsonInt(args, "max_entries", 64);
+		if (maxEntries < 1) maxEntries = 1;
+		if (maxEntries > 1024) maxEntries = 1024;
+		if (!session_.GetBackendInfo().Supports(IpcCommand::TraceMemoryCollect))
+			return {{"error", "duration_ms (collect mode) is not supported by this backend"}};
+		auto c = session_.TraceMemoryCollect(addr, static_cast<uint32_t>(size), static_cast<uint32_t>(durationMs),
+			access == "write" ? kTraceAccessWrite : (kTraceAccessWrite | kTraceAccessRead), static_cast<uint32_t>(maxEntries));
+		if (!c.ok) return {{"error", "TraceMemory collect failed"}};
+		static const char* const kRegs[16] = { "rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp",
+			"r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15" };
+		auto hex = [](uint64_t v) { char b[24]; snprintf(b, sizeof(b), "0x%llX", static_cast<unsigned long long>(v)); return std::string(b); };
+		std::sort(c.entries.begin(), c.entries.end(),
+			[](const TraceMemoryCollectEntry& a, const TraceMemoryCollectEntry& b) { return a.hits > b.hits; });
+		json list = json::array();
+		for (const auto& e : c.entries) {
+			json regs = json::object();
+			for (int i = 0; i < 16; ++i) regs[kRegs[i]] = hex(e.regs[i]);
+			regs["rflags"] = hex(e.rflags);
+			json item = {{"instructionAddress", hex(e.instructionAddress)}, {"hits", e.hits},
+				{"firstThreadId", e.firstThreadId},
+				{"access", (e.access & kTraceAccessRead) ? ((e.access & kTraceAccessWrite) ? "readwrite" : "read") : "write"},
+				{"registers", regs}};
+			if (e.flags & kTraceEntryAfterInstruction) {
+				item["addressIs"] = "next_instruction"; // a hardware data breakpoint traps after the access
+			} else if (auto insns = session_.Disassemble(e.instructionAddress, 1); !insns.empty()) {
+				item["instruction"] = insns[0].mnemonic;
+			}
+			list.push_back(item);
+		}
+		return {{"address", hex(addr)}, {"duration_ms", durationMs}, {"access", access}, {"total_hits", c.totalHits},
+			{"dropped_hits", c.droppedHits}, {"instructions", list}};
+	}
+
 	int timeoutMs = JsonInt(args, "timeout_ms", 10000);
 	if (timeoutMs < 100) timeoutMs = 100;
 	if (timeoutMs > 60000) timeoutMs = 60000;
