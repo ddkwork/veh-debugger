@@ -170,6 +170,7 @@ enum class IpcStatus : uint32_t {
 	NotFound               = 2,
 	InvalidArgs            = 3,
 	Unsupported            = 4,  // the backend does not implement this command
+	LimitReached           = 5,  // a backend table is full (breakpoint/watch slots); free one first
 };
 
 // --- Payload structures ---

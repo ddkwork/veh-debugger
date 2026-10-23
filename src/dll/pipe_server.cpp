@@ -977,7 +977,7 @@ void PipeServer::HandleBreakpointCommand(uint32_t command, const uint8_t* payloa
 
 		uint32_t id = HwBreakpointManager::Instance().Add(req->address, type, bpSize);
 		SetHwBreakpointResponse resp;
-		resp.status = id ? IpcStatus::Ok : IpcStatus::Error;
+		resp.status = id ? IpcStatus::Ok : IpcStatus::LimitReached; // Add fails only when DR0-DR3 are all used
 		resp.id = id;
 		resp.slot = 0;
 		if (id) {

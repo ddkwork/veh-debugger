@@ -50,7 +50,7 @@ json McpServer::ToolSetBreakpoint(const json& args) {
 
 	auto bpResult = session_.SetBreakpoint(addr);
 	if (!bpResult.ok) {
-		return {{"error", "Failed to set breakpoint"}};
+		return {{"error", bpResult.full ? "Failed to set breakpoint: the backend has no free breakpoint slot (remove one first)" : "Failed to set breakpoint"}};
 	}
 
 	{
@@ -148,7 +148,7 @@ json McpServer::ToolSetSourceBreakpoint(const json& args) {
 
 	auto bpResult = session_.SetBreakpoint(addr);
 	if (!bpResult.ok) {
-		return {{"error", "Failed to set breakpoint at resolved address"}};
+		return {{"error", bpResult.full ? "Failed to set breakpoint: the backend has no free breakpoint slot (remove one first)" : "Failed to set breakpoint at resolved address"}};
 	}
 
 	{
@@ -221,7 +221,7 @@ json McpServer::ToolSetFunctionBreakpoint(const json& args) {
 
 	auto bpResult = session_.SetBreakpoint(addr);
 	if (!bpResult.ok) {
-		return {{"error", "Failed to set breakpoint at resolved address"}};
+		return {{"error", bpResult.full ? "Failed to set breakpoint: the backend has no free breakpoint slot (remove one first)" : "Failed to set breakpoint at resolved address"}};
 	}
 
 	{
@@ -313,7 +313,8 @@ json McpServer::ToolSetDataBreakpoint(const json& args) {
 
 	auto result = session_.SetHwBreakpoint(addr, type, static_cast<uint8_t>(size));
 	if (!result.ok) {
-		return {{"error", "Failed to set data breakpoint; the backend rejected the request or did not return a valid response"}};
+		return {{"error", result.full ? "Failed to set data breakpoint: the backend has no free slot (VEH: 4 debug registers; remove one first)"
+			: "Failed to set data breakpoint; the backend rejected the request or did not return a valid response"}};
 	}
 
 	{

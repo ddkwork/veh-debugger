@@ -23,12 +23,14 @@ namespace veh {
 struct BpResult {
 	bool ok = false;
 	uint32_t id = 0;
+	bool full = false; // the backend has no free breakpoint slot
 };
 
 struct HwBpResult {
 	bool ok = false;
 	uint32_t id = 0;
 	uint8_t slot = 0;
+	bool full = false; // the backend has no free slot (VEH: DR0-DR3 all used)
 };
 
 struct StopEvent {

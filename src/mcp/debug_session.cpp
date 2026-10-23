@@ -573,6 +573,7 @@ BpResult DebugSession::SetBreakpoint(uint64_t address) {
 			result.ok = true;
 			result.id = resp->id;
 		}
+		result.full = resp->status == IpcStatus::LimitReached;
 	}
 	return result;
 }
@@ -635,6 +636,7 @@ HwBpResult DebugSession::SetHwBreakpoint(uint64_t address, uint8_t type, uint8_t
 			result.id = resp->id;
 			result.slot = resp->slot;
 		}
+		result.full = resp->status == IpcStatus::LimitReached;
 	}
 	return result;
 }
