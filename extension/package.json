@@ -156,8 +156,25 @@
             "properties": {
               "processId": {
                 "type": "number",
-                "description": "Process ID to attach to",
+                "description": "Host or guest process ID to attach to",
                 "default": 0
+              },
+              "targetScope": {
+                "type": "string",
+                "enum": ["host", "guest"],
+                "description": "host (default) uses the VEH DLL; guest starts an external IPC agent and validates guest PID/width. Guest DAP currently supports threads, readMemory and disassemble only.",
+                "default": "host"
+              },
+              "agent": {
+                "type": "string",
+                "description": "Absolute external agent executable path for targetScope=guest; the adapter passes --pid and --pipe.",
+                "default": ""
+              },
+              "agentArgs": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Arguments passed to the guest agent after --pid and --pipe.",
+                "default": []
               },
               "stopOnModuleLoad": {
                 "type": "array",

@@ -229,6 +229,27 @@ npm run compile
 ```
 - `processId`: 대상 프로세스 PID (작업 관리자에서 확인)
 
+**외부 게스트 프로세스에 DAP 연결 (실험적 읽기 전용)**
+
+```json
+{
+    "type": "veh",
+    "request": "attach",
+    "name": "Guest process",
+    "targetScope": "guest",
+    "processId": 1234,
+    "agent": "C:\\path\\to\\guest-agent.exe",
+    "agentArgs": ["--vm", "configured-vm"]
+}
+```
+
+어댑터는 agent를 `--pid <guest PID> --pipe <고유 파이프>`로 시작하고,
+연결 상대의 프로세스 ID와 게스트 범위·PID·32/64비트 주소 폭을 확인합니다.
+현재 게스트 DAP는 `threads`, `readMemory`, `disassemble` 및 분리만 지원합니다.
+실행·정지·BP·스텝·종료 등은 명시적으로 실패하며, 게스트 실행은 MCP의
+`veh_attach(target_scope="guest")`에서도 아직 지원하지 않습니다.
+`stopOnModuleLoad`는 게스트 DAP 연결에서 사용할 수 없습니다.
+
 ### 2. TCP 모드 (로컬)
 
 어댑터를 별도 프로세스로 실행한 뒤 DAP 클라이언트에서 TCP로 연결:
