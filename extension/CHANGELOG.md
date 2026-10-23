@@ -3,11 +3,14 @@
 ## Unreleased
 
 ### Added
+- **Timed memory-access collection** -- `veh_trace_memory.duration_ms` collects write or combined read/write hits by instruction location, with hit counts, first-thread registers and explicit `dropped_hits`. Omitting `duration_ms` preserves the original first-write mode. On the VEH backend, locations are marked `addressIs="next_instruction"` and registers describe the state after the first access; read-only collection and per-hit read/write classification are not supported.
 - **VM attachment without a process (MCP)** -- `veh_attach` accepts `target_scope="vm"` with an external backend and no PID. The frontend validates explicit VM metadata, opens no host target handle, starts no target process monitor, and omits `--pid` for VM agents. Invalid VM arguments preserve the current session; guest-process PID/width validation remains separate.
 - **Explicit VM control and vCPU instruction trace (MCP)** -- `veh_virtual_machine` uses versioned backend IPC for whole-VM status/pause/resume and one bounded paused-vCPU interpreter batch. CR3/CPL/RIP boundaries stop before execution; returned records retain exact timestamps and completion/loss counts, including partial failures. It is independent of the guest PID and does not imply selective thread stops. Manual/toolbox calls are supported; process-scoped batch/capture/actions intentionally exclude VM-wide execution.
 - **External guest attachment (MCP)** -- `veh_attach` accepts `target_scope="guest"` directly or through a registered backend. The backend validates PID and 32/64-bit metadata, without opening or monitoring the same numeric host PID. Agent reuse checks executable, arguments and scope. Guest process discovery and guest launch/stopOnEntry remain unsupported.
 
 ### Fixed
+- **Stale continue stop events** -- `veh_continue` discards earlier stop events for threads it has resumed and, when the backend supports stopped-state queries, verifies that a thread is still stopped before reporting it. This avoids reporting an already-resumed thread as stopped before a trace request.
+- **Backend-neutral breakpoint errors** -- a failed data-breakpoint request no longer assumes every backend has four hardware slots; numeric backend capacities are not negotiated by the current capability protocol.
 - **Caller trace duration compatibility** -- `veh_trace_callers` returns both `durationMs` and the legacy `durationSec` field. Whole seconds retain integer values; subsecond windows use fractional seconds without rounding. Both `duration_sec` and `duration_ms` inputs remain supported, with milliseconds taking precedence when both are provided.
 - **Guest launch routing** -- unsupported guest launch rejects before host process creation or replacement of the current session.
 - **Unsupported backend results** -- pause and terminate no longer report success when unsupported; rejected termination preserves the session.

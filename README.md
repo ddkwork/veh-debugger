@@ -316,7 +316,8 @@ enabled = true
 기본 `backend="veh"`는 호스트 프로세스에 VEH DLL을 주입합니다. 외부 백엔드는
 `backend` 이름이나 `agent` 실행 파일로 선택하며, 도구 지원 범위는 attach 응답의
 `backend.unsupported`로 확인합니다. `noTargetFootprint`만으로 게스트 대상 여부나
-모든 도구의 지원을 판단하지 않습니다.
+모든 도구의 지원을 판단하지 않습니다. 현재 capability 응답은 명령·기능 지원만 알리며,
+중단점 최대 개수·사용량·남은 슬롯은 제공하지 않습니다.
 
 VM용 백엔드는 서버 옆 `veh-backends.json`에 다음처럼 등록합니다. `VEH_BACKENDS`
 환경변수로 다른 설정 파일을 지정할 수도 있습니다. 상대 실행 파일 경로는 설정 파일
@@ -346,7 +347,7 @@ DAP의 게스트 연결 설정은 추가하지 않습니다. 실행 중 서버�
 |------|------|------|
 | `veh_toolbox` | `operation, tool?, arguments?, profile?, query?, schema_handle?` | 현재 프로필에 eager 노출되지 않은 도구를 검색·설명·호출하는 lazy gateway. `describe`가 반환한 `schema_handle`을 재사용하면 변경 없음만 짧게 확인한다. |
 | `veh_virtual_machine` | `operation, cpu?, max_instructions?, duration_ms?, cpl_mask?, cr3_roots?, rip_begin?, rip_end?` | 명시적 VM 전체 제어·정지 상태 vCPU 트레이스. 수동 호출 전용 |
-| `veh_attach` | `pid?, backend?/agent?, agent_args?, target_scope?` | VEH 주입 또는 외부 백엔드 연결. VM PID는 `target_scope="guest"`와 백엔드 검증 필요 VM 자체 연결은 pid를 생략합니다. |
+| `veh_attach` | `pid?, backend?/agent?, agent_args?, target_scope?` | VEH 주입 또는 외부 백엔드 연결. VM PID는 `target_scope="guest"`와 백엔드 검증 필요. VM 자체 연결은 pid를 생략합니다. |
 | `veh_launch` | `program, args?, stopOnEntry?, cwd?, env?, backend?/agent?, target_scope?` | 호스트 프로세스 생성·연결. `cwd`/`env` 지원. 게스트 launch/stopOnEntry는 미지원이며 기존 세션을 보존하고 거부 |
 | `veh_detach` | - | 디버거 분리 (타겟은 계속 실행) |
 | `veh_terminate` | `exitCode?` | 타겟을 **내부에서** 강제 종료 (주입된 DLL이 자기 프로세스에 `TerminateProcess` 호출). 외부 `taskkill`/`OpenProcess`를 막는 자기보호 타겟(deny-DACL/상위 무결성)도 확실히 종료 -- 프로세스 자기 핸들은 항상 종료 권한 보유. 종료 후 자동 detach. `WM_CLOSE->detach->taskkill` 수순 대체 |
@@ -388,17 +389,39 @@ DAP의 게스트 연결 설정은 추가하지 않습니다. 실행 중 서버�
 | `veh_disassemble` | `address, count?` | 디스어셈블리 (Zydis) |
 | `veh_exception_info` | - | 마지막 예외 정보 조회 |
 | `veh_trace_register` | `threadId, register, mode?, value?, max_steps?` | 레지스터 변화 추적 (DLL 내부 스텝 루프, IPC 오버헤드 0) |
-| `veh_trace_memory` | `address, size?, timeout_ms?` | 메모리 쓰기 추적 (임시 HW BP로 빠르게 감지) |
+| `veh_trace_memory` | `address, size?, timeout_ms?, duration_ms?, access?, max_entries?` | 기본은 첫 쓰기 감지. `duration_ms` 지정 시 쓰기 또는 읽기·쓰기 접근 횟수 수집 |
 | `veh_resolve_imports` | `threadId, addresses, max_steps?, follow_exceptions?, system_only?, target_modules?` | 난독화 import 일괄 해석 (thunk -> DLL 스텝 추적, 최대 2000개) |
 | `veh_batch` | `steps, inputs?, input_variable?, stop_on_error?` | 다중 명령 일괄 실행 및 동일 세션의 입력별 순차 실행. 결과 참조, 제어 흐름, 입력별 status/count/첫 실패/trace artifact 요약을 반환한다. |
-| `veh_trace_callers` | `address, duration_sec?` | 함수 호출자 프로파일링 (자동 resume -> N초간 caller 수집 -> 자동 pause). 유니크 caller별 히트 카운트 반환. x64: RtlVirtualUnwind (정확). x86: [ESP] (함수 진입점에서만 정확) |
-| `veh_trace_calls` | `addresses, duration_sec?, resolve?, system_only?` | call/jmp 명령이 런타임에 어디로 가는지 모니터링. 콜 사이트에 BP 설치 후 N초간 실행, 실제 타겟 주소 + API 이름 수집. `resolve=true`: thunk/trampoline을 자연스러운 call 컨텍스트에서 따라가 최종 API까지 추적 (예외 기반 난독화 대응). `system_only=true`: 시스템 DLL 타겟만 반환. 패킹된 바이너리의 IAT 복원용. |
+| `veh_trace_callers` | `address, duration_sec?, duration_ms?` | 함수 호출자 프로파일링 (자동 resume -> N초간 caller 수집 -> 자동 pause). 유니크 caller별 히트 카운트 반환. x64: RtlVirtualUnwind (정확). x86: [ESP] (함수 진입점에서만 정확) |
+| `veh_trace_calls` | `addresses, duration_sec?, duration_ms?, resolve?, system_only?` | call/jmp 명령이 런타임에 어디로 가는지 모니터링. 콜 사이트에 BP 설치 후 N초간 실행, 실제 타겟 주소 + API 이름 수집. `resolve=true`: thunk/trampoline을 자연스러운 call 컨텍스트에서 따라가 최종 API까지 추적 (예외 기반 난독화 대응). `system_only=true`: 시스템 DLL 타겟만 반환. 패킹된 바이너리의 IAT 복원용. |
 | `veh_trace_basic_blocks` | `threadId, start, end, ..., stop_on_return?, collect_events?, collect_memory_events?, collect_register_events?, collect_code?, ...` | DLL 내부 bounded trace. 선택적 function-return scope, ordered block/code/memory/register occurrence stream 및 block/edge, delta, memory, dependency, region, exception을 반환한다. |
 | `veh_targeted_capture` | `inputs, steps?, trace, trigger, window, environment?, output_directory, stop_on_error?` | 입력별 setup 후 occurrence 전후 ordered trace와 환경 snapshot을 서버 파일에 저장한다. instruction이 1개 이상 완료되고 요청한 target-window stop으로 끝난 입력만 성공으로 집계한다. |
 | `veh_checkpoint_create` | `threadId, regions?, capture_teb?, teb_size?` | GPR/flags(x64는 XMM 포함), TEB 및 FS/GS 환경과 선택 메모리를 저장한다. TEB bytes는 비교 전용이며 stack region은 saved SP부터의 안전한 복원 범위를 표시한다. |
 | `veh_checkpoint_restore` | `id` | 동일 스레드가 VEH 정지된 상태에서 context와 선택 메모리를 복원한다. saved SP 아래의 live VEH stack frame은 보존하며 변경된 매핑은 거부하고 실패 시 rollback한다. |
 | `veh_checkpoint_diff` | `id, other_id?` | checkpoint와 현재 상태 또는 다른 checkpoint의 register 및 변경 메모리 구간을 비교한다. |
 | `veh_checkpoint_delete` | `id` | checkpoint를 삭제하고 서버 메모리 예산을 반환한다. |
+
+**메모리 접근 수집**
+
+`veh_trace_memory`는 `duration_ms`를 생략하면 기존 첫 쓰기 감지 모드로
+동작합니다. 필수 인자는 `address`뿐이며 `size`는 기본 4바이트,
+`timeout_ms`는 기본 10000ms입니다. `duration_ms`를 지정하면 실행을 계속하며
+지정 시간(10~60000ms) 동안 위치별 접근 횟수를 수집하고 `timeout_ms`는 무시합니다.
+`access`는 기본 `write`이며 `readwrite`는 읽기와 쓰기를 합쳐 수집합니다.
+각 적중의 읽기·쓰기를 분류하거나 읽기만 수집하지는 않습니다.
+`max_entries`는 기본 64개, 최대 1024개이며 저장하지 못한 위치의 적중 횟수는
+`dropped_hits`로 반환합니다.
+
+```json
+{"address":"sample.exe+0x2000"}
+{"address":"sample.exe+0x2000","duration_ms":1000,"access":"readwrite"}
+```
+
+VEH 수집은 하드웨어 데이터 중단점 슬롯 하나를 사용하며 주소는 감시 크기에 맞춰
+정렬돼야 합니다. `instructionAddress`는 **접근 명령 실행 후 IP**이며
+`addressIs="next_instruction"`으로 표시됩니다. 첫 적중의 레지스터도 실행 후
+상태입니다. 모든 적중의 컨텍스트를 보존하는 대신 해당 위치별 횟수를 집계합니다.
+외부 백엔드에서 이 모드를 사용하려면 `TraceMemoryCollect` 구현이 필요합니다.
 
 **시스템 이벤트와 숨은 훅** (OS 아래에서 도는 하이퍼바이저 백엔드에 attach했을 때만 동작, 다른 백엔드는 사용 불가로 응답)
 

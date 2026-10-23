@@ -88,6 +88,15 @@ extension to the VSCode DAP launch configuration. Use `veh_toolbox` with
 `operation="describe"` for the live attach/launch schema. See the repository's
 English README for registration and prerequisites.
 
+`veh_trace_memory` preserves first-write detection when `duration_ms` is omitted.
+Add `duration_ms` (10-60000 ms) to collect location counts with `access="write"`
+(default) or combined `"readwrite"`; read-only and individual read/write
+classification are unsupported. `max_entries` defaults to 64 (maximum 1024), with
+`dropped_hits` for unretained locations. On VEH, `instructionAddress` is the
+post-access IP (`addressIs="next_instruction"`), and first-hit registers are also
+post-access. External backends must implement the collection command; capability
+flags do not report numeric breakpoint capacities.
+
 `veh_trace_basic_blocks` supports x86/x64 ordered memory and register provenance,
 self-modifying code versions, dispatcher occurrence windows, and file-backed
 JSON/JSONL or `.vtc` artifacts. Direct calls, `veh_batch`, and breakpoint actions

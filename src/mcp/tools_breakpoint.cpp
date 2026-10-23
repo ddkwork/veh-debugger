@@ -313,7 +313,7 @@ json McpServer::ToolSetDataBreakpoint(const json& args) {
 
 	auto result = session_.SetHwBreakpoint(addr, type, static_cast<uint8_t>(size));
 	if (!result.ok) {
-		return {{"error", "Failed to set data breakpoint (max 4 HW slots)"}};
+		return {{"error", "Failed to set data breakpoint; the backend rejected the request or did not return a valid response"}};
 	}
 
 	{

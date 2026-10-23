@@ -79,7 +79,7 @@ Named Pipe (`\\.\pipe\dotnet-diagnostic-{pid}`), binary framed:
 | 0x0040-0x0044 | PDB symbol resolution (SourceLine, Function, EnumLocals, Symbolize, DisplayType) |
 | 0x0050 | TraceCallers (lock-free ring buffer collection) |
 | 0x0060-0x0066 | Memory management (AllocateMemory, FreeMemory, ExecuteShellcode, QueryMemoryMap, SearchMemory, ProtectMemory, ValueScan) |
-| 0x0070-0x0074 | Dynamic tracing (TraceRegister, TraceMemory, ResolveImport, TraceCalls, TraceBasicBlocks) |
+| 0x0070-0x0075 | Dynamic tracing (TraceRegister, TraceMemory, ResolveImport, TraceCalls, TraceBasicBlocks, TraceMemoryCollect) |
 | 0x00F0/0x00FF | Lifecycle (Detach, Shutdown) |
 | 0x00FC | GetCapabilities: backend kind, capability flags, per-command support bitmap. An out-of-process server of this protocol is started as `<agent> --pid <pid> --pipe <name>` (`veh_attach` `agent` or a name in `veh-backends.json`) and must be the process serving that pipe; unimplemented commands answer `IpcStatus::Unsupported` |
 
@@ -91,6 +91,15 @@ rejects attach; guest launch rejects before host creation or session replacement
 Guest stop-event ownership must be checked by the authenticated backend, not
 host Toolhelp or synchronous IPC from the event reader. Discovery, guest launch,
 stop/trace support depend on separately implemented backend operations.
+
+`TraceMemoryCollect` (0x0075) performs timed memory-access aggregation inside the
+backend. On VEH it uses one hardware data-breakpoint slot and records post-access
+IP/registers without a debugger stop on each collected hit. Results aggregate
+counts by reported IP, retain first-hit thread/registers and report dropped hits
+when the entry table is full. `readwrite` combines reads and writes; it does not
+classify them separately. `TraceMemory` (0x0071) remains the first-write command.
+`GetCapabilities` advertises commands and flags, not maximum, used or remaining
+breakpoint slots; numeric resource limits must not be inferred from those flags.
 
 ### Key Events
 | Code | Event |

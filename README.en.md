@@ -300,6 +300,8 @@ The default `backend="veh"` injects the VEH DLL into a host process. Select an
 external backend by registered `backend` name or explicit `agent` executable.
 Check the attach response's `backend.unsupported` for command availability;
 `noTargetFootprint` alone does not identify guest scope or imply tool parity.
+Capabilities report command/feature support, not maximum, used or remaining
+breakpoint slots.
 
 Register a VM backend in `veh-backends.json` beside the server, or select another
 file with `VEH_BACKENDS`. Relative executable paths resolve from that file's
@@ -331,7 +333,7 @@ The table below documents the complete public tool surface. Treat the running se
 |------|------|-------------|
 | `veh_toolbox` | `operation, tool?, arguments?, profile?, query?, schema_handle?` | Lazy gateway for tools not eager in the active profile. Search, describe, and call tools; reuse a `describe` response's `schema_handle` for a short unchanged check. |
 | `veh_virtual_machine` | `operation, cpu?, max_instructions?, duration_ms?, cpl_mask?, cr3_roots?, rip_begin?, rip_end?` | Explicit whole-VM control and paused-vCPU trace; manual calls only |
-| `veh_attach` | `pid?, backend?/agent?, agent_args?, target_scope?` | VEH injection or external backend attach; guest PIDs require guest scope and backend validation VM attachment omits pid. |
+| `veh_attach` | `pid?, backend?/agent?, agent_args?, target_scope?` | VEH injection or external backend attach; guest PIDs require guest scope and backend validation. VM attachment omits pid. |
 | `veh_launch` | `program, args?, stopOnEntry?, cwd?, env?, backend?/agent?, target_scope?` | Create/attach a host process with optional cwd/env; guest launch/stopOnEntry rejects and preserves an existing session |
 | `veh_detach` | - | Detach debugger (target keeps running) |
 | `veh_terminate` | `exitCode?` | Kill the target from **inside** (the injected DLL calls `TerminateProcess` on its own process). Works even on self-protected targets that deny external `taskkill`/`OpenProcess` (deny-DACL or higher integrity), since a process's own handle always has terminate rights. Auto-detaches afterward. Replaces the `WM_CLOSE->detach->taskkill` dance. |
@@ -373,17 +375,40 @@ The table below documents the complete public tool surface. Treat the running se
 | `veh_disassemble` | `address, count?` | Disassemble (Zydis) |
 | `veh_exception_info` | - | Last exception info |
 | `veh_trace_register` | `threadId, register, mode?, value?, max_steps?` | Trace register changes (DLL-internal step loop, zero IPC overhead) |
-| `veh_trace_memory` | `address, size?, timeout_ms?` | Trace memory writes (temp HW BP, fast detection) |
+| `veh_trace_memory` | `address, size?, timeout_ms?, duration_ms?, access?, max_entries?` | First-write detection by default; `duration_ms` selects write or combined read/write collection |
 | `veh_resolve_imports` | `threadId, addresses, max_steps?, follow_exceptions?, system_only?, target_modules?` | Batch-resolve obfuscated imports (step from thunk to DLL, up to 2000) |
 | `veh_batch` | `steps, inputs?, input_variable?, stop_on_error?` | Execute commands and repeat them sequentially per input in one session, with references/control flow plus per-input status, counts, first failure, trace summaries, and artifact metadata. |
-| `veh_trace_callers` | `address, duration_sec?` | Profile function callers (auto-resume -> collect for N seconds -> auto-pause). Returns unique callers with hit counts. x64: RtlVirtualUnwind (accurate). x86: [ESP] (accurate only at function entry) |
-| `veh_trace_calls` | `addresses, duration_sec?, resolve?, system_only?` | Monitor where call/jmp instructions go at runtime. Sets BPs on call sites, runs program for N seconds, collects actual targets with API names. `resolve=true`: follow thunks/trampolines in natural call context to final API (handles exception-based obfuscation). `system_only=true`: return only system DLL targets. For IAT reconstruction on packed binaries. |
+| `veh_trace_callers` | `address, duration_sec?, duration_ms?` | Profile function callers (auto-resume -> collect for N seconds -> auto-pause). Returns unique callers with hit counts. x64: RtlVirtualUnwind (accurate). x86: [ESP] (accurate only at function entry) |
+| `veh_trace_calls` | `addresses, duration_sec?, duration_ms?, resolve?, system_only?` | Monitor where call/jmp instructions go at runtime. Sets BPs on call sites, runs program for N seconds, collects actual targets with API names. `resolve=true`: follow thunks/trampolines in natural call context to final API (handles exception-based obfuscation). `system_only=true`: return only system DLL targets. For IAT reconstruction on packed binaries. |
 | `veh_trace_basic_blocks` | `threadId, start, end, ..., stop_on_return?, collect_events?, collect_memory_events?, collect_register_events?, collect_code?, ...` | Bounded trace with optional function-return scope and ordered block/code/memory/register-occurrence streams, block/edge coverage, memory observations, dependencies, summaries, regions, and exceptions. |
 | `veh_targeted_capture` | `inputs, steps?, trace, trigger, window, environment?, output_directory, stop_on_error?` | Apply per-input setup and write occurrence-centered ordered trace/environment artifacts; only nonzero traces completed by the requested target-window stop count as successful. |
 | `veh_checkpoint_create` | `threadId, regions?, capture_teb?, teb_size?` | Capture GPR/flags (plus x64 XMM), TEB and FS/GS environment, and selected memory. Optional TEB bytes are comparison-only OS-managed state; stack regions identify the safe logical restore range from saved SP upward. |
 | `veh_checkpoint_restore` | `id` | Restore context and selected memory while the original thread is VEH-stopped; preserve live VEH stack frames below saved SP, refuse changed mappings, and attempt rollback on failure. |
 | `veh_checkpoint_diff` | `id, other_id?` | Compare a checkpoint with current state or another checkpoint and return register and changed-memory spans. |
 | `veh_checkpoint_delete` | `id` | Delete a checkpoint and release its server-side memory budget. |
+
+**Memory access collection**
+
+`veh_trace_memory` keeps its original first-write mode when `duration_ms` is
+omitted. Only `address` is required; `size` defaults to 4 bytes and
+`timeout_ms` to 10000. Add `duration_ms` to collect location counts while
+execution continues (10-60000 ms); this mode ignores `timeout_ms`.
+`access` defaults to `write`; `readwrite` combines reads and writes without
+classifying individual hits. Read-only collection is unsupported.
+`max_entries` defaults to 64 (maximum 1024); hits at unretained locations count
+in `dropped_hits`.
+
+```json
+{"address":"sample.exe+0x2000"}
+{"address":"sample.exe+0x2000","duration_ms":1000,"access":"readwrite"}
+```
+
+On the VEH backend, collection uses one hardware data-breakpoint slot and requires
+size-aligned addresses. `instructionAddress` is the **post-access IP**, marked
+`addressIs="next_instruction"`; first-hit registers are also post-access.
+Results aggregate counts by that location, rather than retain every hit's context.
+This is VEH hardware-breakpoint collection; external backends must implement
+`TraceMemoryCollect` to support it.
 
 > **Non-stop inspection (no target stop required)**: `veh_read_memory` / `veh_read_pointer_chain` / `veh_write_memory` / `veh_dump_memory` / `veh_disassemble` / `veh_modules` / `veh_memory_map` / `veh_protect_memory` / `veh_search_memory` / `veh_value_scan` / `veh_symbolize` / `veh_display_type` work while the target is **running** (serviced by a dedicated pipe thread inside the DLL -- other threads are never frozen). You don't need a breakpoint or a detach/attach round-trip to read live values during GUI interaction. In contrast, `veh_registers` / `veh_stack_trace` / `veh_enum_locals` / `veh_step_*` need a thread context, so they only work when stopped at a breakpoint or after `veh_pause`.
 
