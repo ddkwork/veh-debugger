@@ -29,14 +29,17 @@ publication. `veh.release.publish` is deliberately separate from
 
 ## MCP exposure profiles and lazy toolbox
 
-The server defaults to `--profile=lite`. Keep each eager surface at ten tools or fewer, and use `veh_toolbox` for the long tail:
+The server defaults to `--profile=lite`. Keep `lite`, `interactive` and `capture` at ten eager tools or fewer; `full` explicitly exposes the complete inventory. Use `veh_toolbox` for the long tail:
 
-| Profile | Eager tools | Intended workflow |
-|---|---:|---|
-| `lite` | 7 | Launch/attach/continue/batch/terminate/registers plus lazy discovery |
-| `interactive` | 10 | Attach, breakpoints, registers, disassembly, and memory inspection |
-| `capture` | 10 | VM trace, targeted input capture, and checkpoint restore loops |
-| `full` | 46 | Compatibility with clients that require the complete eager inventory |
+| Profile | Intended workflow |
+|---|---|
+| `lite` | Launch/attach/continue/batch/terminate/registers plus lazy discovery |
+| `interactive` | Attach, breakpoints, registers, disassembly, and memory inspection |
+| `capture` | Process traces, targeted input capture, and checkpoint restore loops |
+| `full` | Clients that require the complete eager inventory |
+
+Use `veh_toolbox(operation="profiles")` for current counts and `tools/list` for
+the active eager inventory; counts are not fixed documentation contracts.
 
 ```json
 {"operation":"list","query":"checkpoint"}
@@ -46,7 +49,13 @@ The server defaults to `--profile=lite`. Keep each eager surface at ten tools or
 
 Reuse the returned `schema_handle` in a later `describe`; an unchanged schema returns only the name, handle, and `unchanged:true`. Tools remain directly callable by name even when they are not in the active `tools/list`, preserving existing scenario, analyzer, and batch automation. `veh_toolbox` is control-plane discovery and deliberately cannot call itself or be nested in `veh_batch`/breakpoint actions.
 
-Batch steps, targeted-capture setup steps, and breakpoint actions call the same tool implementations as direct MCP calls, so arguments, validation, and result fields are identical everywhere. Only session lifecycle tools (`veh_attach`, `veh_launch`, `veh_detach`, `veh_terminate`) and re-entrant orchestrators (`veh_batch`, `veh_targeted_capture`, `veh_toolbox`) are rejected in those nested contexts; the `nested` flag in the server tool table is the single source for that policy.
+Batch steps, targeted-capture setup steps, and breakpoint actions call the same tool implementations as direct MCP calls. Session lifecycle tools (`veh_attach`, `veh_launch`, `veh_detach`, `veh_terminate`), re-entrant orchestrators (`veh_batch`, `veh_targeted_capture`, `veh_toolbox`) and VM-wide `veh_virtual_machine` are rejected in those nested contexts; the tool table's `nested` flag defines the policy.
+
+`LimitReached` adds a backend result status, not a tool or input field, so it needs
+no eager-profile or gateway-schema expansion. Direct breakpoint failures and
+`veh_toolbox` calls retain the error and MCP `isError`; batch steps retain the
+same error in their failed step result. `test/test_data_bp_slots.py` checks these
+paths across all four profiles against the VEH slot limit.
 
 Measure the current executable rather than estimating token counts from source:
 

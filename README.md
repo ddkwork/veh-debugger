@@ -317,7 +317,8 @@ enabled = true
 `backend` 이름이나 `agent` 실행 파일로 선택하며, 도구 지원 범위는 attach 응답의
 `backend.unsupported`로 확인합니다. `noTargetFootprint`만으로 게스트 대상 여부나
 모든 도구의 지원을 판단하지 않습니다. 현재 capability 응답은 명령·기능 지원만 알리며,
-중단점 최대 개수·사용량·남은 슬롯은 제공하지 않습니다.
+중단점 최대 개수·사용량·남은 슬롯은 제공하지 않습니다. 백엔드가 슬롯 부족을
+`LimitReached`로 반환하면 명시적인 오류로 안내하므로 기존 중단점을 해제한 뒤 재시도합니다.
 
 VM용 백엔드는 서버 옆 `veh-backends.json`에 다음처럼 등록합니다. `VEH_BACKENDS`
 환경변수로 다른 설정 파일을 지정할 수도 있습니다. 상대 실행 파일 경로는 설정 파일

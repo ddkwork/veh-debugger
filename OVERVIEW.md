@@ -100,6 +100,9 @@ when the entry table is full. `readwrite` combines reads and writes; it does not
 classify them separately. `TraceMemory` (0x0071) remains the first-write command.
 `GetCapabilities` advertises commands and flags, not maximum, used or remaining
 breakpoint slots; numeric resource limits must not be inferred from those flags.
+A full backend breakpoint table may return `IpcStatus::LimitReached` (5); MCP
+breakpoint handlers preserve the capacity failure in their error message. Older
+peers may still return a generic error, which must not be interpreted as exhaustion.
 
 ### Key Events
 | Code | Event |

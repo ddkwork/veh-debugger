@@ -95,7 +95,8 @@ classification are unsupported. `max_entries` defaults to 64 (maximum 1024), wit
 `dropped_hits` for unretained locations. On VEH, `instructionAddress` is the
 post-access IP (`addressIs="next_instruction"`), and first-hit registers are also
 post-access. External backends must implement the collection command; capability
-flags do not report numeric breakpoint capacities.
+flags do not report numeric breakpoint capacities. Backends may return `LimitReached`
+when full; breakpoint tools then report no free slot so an existing breakpoint can be removed.
 
 `veh_trace_basic_blocks` supports x86/x64 ordered memory and register provenance,
 self-modifying code versions, dispatcher occurrence windows, and file-backed

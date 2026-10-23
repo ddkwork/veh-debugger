@@ -301,7 +301,8 @@ external backend by registered `backend` name or explicit `agent` executable.
 Check the attach response's `backend.unsupported` for command availability;
 `noTargetFootprint` alone does not identify guest scope or imply tool parity.
 Capabilities report command/feature support, not maximum, used or remaining
-breakpoint slots.
+breakpoint slots. A backend that returns `LimitReached` on a full breakpoint table
+produces an explicit no-free-slot error; remove an existing breakpoint before retrying.
 
 Register a VM backend in `veh-backends.json` beside the server, or select another
 file with `VEH_BACKENDS`. Relative executable paths resolve from that file's
