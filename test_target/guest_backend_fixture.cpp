@@ -75,6 +75,7 @@ int wmain(int argc, wchar_t** argv) {
                             veh::IpcCommand::ReadMemory, veh::IpcCommand::Heartbeat, veh::IpcCommand::Detach})
                 veh::SetCommandSupported(caps.commands, op);
             if(vmMode) {
+                veh::SetCommandSupported(caps.commands,veh::IpcCommand::GetProcesses);
                 veh::SetCommandSupported(caps.commands,veh::IpcCommand::ControlVirtualMachine);
                 veh::SetCommandSupported(caps.commands,veh::IpcCommand::TraceVirtualCpu);
             }
@@ -137,6 +138,23 @@ int wmain(int argc, wchar_t** argv) {
                 veh::TraceRegisterResponse response{}; response.status = veh::IpcStatus::Ok;
                 if (!reply(pipe, header.command, response)) break;
             } else if (!reply(pipe, header.command, veh::IpcStatus::Ok)) break;
+        } else if (command == veh::IpcCommand::GetProcesses) {
+            if(!vmMode){if(!reply(pipe,header.command,veh::IpcStatus::Unsupported))break;continue;}
+            if(!bytes.empty()){if(!reply(pipe,header.command,veh::IpcStatus::InvalidArgs))break;continue;}
+            if(mode==L"machine-process-error"){
+                if(!reply(pipe,header.command,veh::IpcStatus::Unsupported))break;
+                continue;
+            }
+            struct {veh::GetProcessesResponse header;veh::GuestProcessInfo entries[2];} processes{};
+            processes.header.status=veh::IpcStatus::Ok;processes.header.count=2;
+            processes.entries[0].pid=4;processes.entries[0].addressBits=64;
+            strcpy_s(processes.entries[0].name,"System");
+            processes.entries[1].pid=4242;processes.entries[1].addressBits=
+                mode==L"machine-process-invalid"?16:32;
+            strcpy_s(processes.entries[1].name,"sample32.exe");
+            const auto length=mode==L"machine-process-short"
+                ?sizeof(processes.header)+sizeof(processes.entries[0]):sizeof(processes);
+            if(!send(pipe,header.command,&processes,static_cast<uint32_t>(length)))break;
         } else if (command == veh::IpcCommand::GetThreads) {
             struct { veh::GetThreadsResponse header; veh::ThreadInfo thread; } threads{};
             threads.header.status = veh::IpcStatus::Ok; threads.header.count = 1; threads.thread.id = 77;

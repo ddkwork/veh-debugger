@@ -192,6 +192,9 @@ use a distinct entry per VM. Scope defaults to `host` for existing backends.
 Guest peers must advertise `kCapGuestTarget` and implement `GetTargetInfo`
 (empty request, exact 16-byte response: status, scope, PID, addressBits).
 The frontend accepts only matching guest scope/PID and 32 or 64 address bits.
+`test/test_vm_attach.py` also checks a synthetic VM-scoped `GetProcesses`
+response through `veh_toolbox` and `veh_batch`, including malformed length,
+invalid width and explicit Unsupported responses.
 It opens no host process handle for guest targets, installs no host PID monitor,
 and uses backend-provided width for disassembly. Guest event ownership is the
 authenticated backend's responsibility, not a host Toolhelp lookup. Backend

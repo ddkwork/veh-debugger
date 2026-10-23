@@ -180,5 +180,7 @@ target, OS thread identity or single process address width. VM agents receive
 `--pipe` and configured arguments; process agents also receive `--pid`.
 Use `veh_virtual_machine` for explicit whole-VM control and bounded vCPU records.
 Physical memory read/write is available when advertised; search/dump needs a
-server operation and is unavailable in VM scope. Guest process attachment still
-uses `target_scope="guest"` and a validated nonzero guest PID.
+server operation and is unavailable in VM scope. A capable backend exposes
+`veh_processes` for one guest OS process snapshot; use a returned PID with
+`veh_attach(target_scope="guest")`. Short image names escape non-ASCII bytes as
+`\\xNN`. Guest process attachment still uses a validated nonzero guest PID.

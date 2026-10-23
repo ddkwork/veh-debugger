@@ -1509,6 +1509,9 @@ std::vector<McpServer::ToolDef> McpServer::BuildAllToolsList() {
 				{"data", {{"type", "string"}, {"description", "write: hex bytes"}}}
 			 }}}}}),
 
+		Tool(&McpServer::ToolProcesses, "system", 0, true,
+			{{"name", "veh_processes"}, {"description", "List guest OS processes from one backend snapshot (PID, address width, escaped short image name). Needs a guest or VM hypervisor backend."},
+			 {"inputSchema", {{"type", "object"}, {"properties", json::object()}}}}),
 		Tool(&McpServer::ToolKernelModules, "system", 0, true,
 			{{"name", "veh_kernel_modules"}, {"description", "Loaded kernel modules (base, size, path). Needs a hypervisor backend."},
 			 {"inputSchema", {{"type", "object"}, {"properties", {

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Added
+- **Guest process discovery (MCP)** -- `veh_processes` asks a capable guest or VM backend for one complete OS process snapshot, returning PIDs, address widths and escaped short image names. It can be called through `veh_toolbox` or `veh_batch`; unsupported backends and malformed responses fail explicitly. Use a returned PID with `veh_attach(target_scope="guest")`; guest launch/stopOnEntry is still pending.
+
 ### Fixed
 - **Host launch metadata** -- MCP `veh_launch` includes the target address width and the initial main-thread ID when available, for both local and TCP launches. The remote runner forwards the ID it received at process creation; older runners remain compatible and omit unavailable thread metadata.
 - **Backend-independent breakpoint kinds** -- MCP stop results use the registered breakpoint kind instead of guessing from numeric ID ranges. External hardware/data breakpoints with low IDs report `hardware`, software breakpoints with high IDs report `software`, and unknown IDs omit the kind.

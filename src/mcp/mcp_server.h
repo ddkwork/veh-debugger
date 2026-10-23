@@ -113,6 +113,7 @@ private:
 	json ToolApic(const json& args);
 	json ToolPci(const json& args);
 	json ToolKernelModules(const json& args);
+	json ToolProcesses(const json& args);
 	json ToolAddressSpace(const json& args);
 	json ToolTransparency(const json& args);
 	json ToolEvent(const json& args);
