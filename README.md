@@ -313,6 +313,8 @@ enabled = true
 
 ### 외부 백엔드와 VM 안의 프로세스 연결 (MCP)
 
+등록 백엔드의 `remote` 설정으로 인증된 TCP 연결도 사용할 수 있습니다. `veh-remote-runner`가 분석 VM에서 에이전트 시작·호스트 프로세스 생성·재연결을 맡습니다. VirtualBox/WHPX에서는 분석 호스트 VM에만 실행기를 두며 내부 게스트에는 설치하지 않습니다. 게스트 launch는 미지원입니다. 설정과 제한은 [원격 전송 문서](docs/REMOTE_TRANSPORT.md)를 참고하세요. 기존 프로필·게이트웨이 도구 수와 명령별 입력은 늘어나지 않습니다.
+
 기본 `backend="veh"`는 호스트 프로세스에 VEH DLL을 주입합니다. 외부 백엔드는
 `backend` 이름이나 `agent` 실행 파일로 선택하며, 도구 지원 범위는 attach 응답의
 `backend.unsupported`로 확인합니다. `noTargetFootprint`만으로 게스트 대상 여부나

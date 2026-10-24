@@ -302,10 +302,14 @@ void PipeClient::StartEventListener(EventCallback cb) {
 		[this] { return readerReady_; });
 }
 
+void PipeClient::CancelPendingIo() {
+	if (pipe_ != INVALID_HANDLE_VALUE) CancelIoEx(pipe_, nullptr);
+}
+
 void PipeClient::StopEventListener() {
 	running_ = false;
 	if (stopEvent_) SetEvent(stopEvent_);
-	if (pipe_ != INVALID_HANDLE_VALUE) CancelIoEx(pipe_, nullptr);
+	CancelPendingIo();
 	if (readerThread_.joinable()) {
 		// reader thread는 AsyncReadExact(5초 타임아웃)에서 블로킹될 수 있다.
 		// CancelIoEx로 I/O를 취소했지만 타이밍상 즉시 종료되지 않을 수 있으므로

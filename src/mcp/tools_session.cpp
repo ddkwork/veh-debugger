@@ -91,17 +91,47 @@ bool ResolveBackend(const json& args, std::optional<DebugSession::ExternalAgent>
 	}
 	std::ifstream in(file);
 	json table = in ? json::parse(in, nullptr, false) : json();
-	if (!table.is_object() || !table.contains(name) || !table[name].contains("path")) {
+	if (!table.is_object() || !table.contains(name) || !table[name].is_object() ||
+        (!table[name].contains("path") && !table[name].contains("remote"))) {
 		error = "Unknown backend '" + name + "' (not in " + file.string() + "). Use \"veh\", register it there, or pass \"agent\".";
 		return false;
 	}
+    if (table[name].contains("remote")) {
+        try {
+            if (table[name].contains("path") || args.contains("agent_args")) throw std::runtime_error("ambiguous");
+            const auto& remote = table[name].at("remote");
+            if (remote.contains("token") || remote.contains("password")) throw std::runtime_error("inline credential");
+            RemoteEndpoint endpoint;
+            endpoint.address = remote.at("address").get<std::string>();
+            if (!remote.at("port").is_number_unsigned()) throw std::runtime_error("port");
+            const auto port = remote.at("port").get<uint64_t>();
+            if (!port || port > 65535) throw std::runtime_error("port");
+            endpoint.port = static_cast<uint16_t>(port);
+            endpoint.certificateSha256 = remote.at("certificate_sha256").get<std::string>();
+            if (endpoint.certificateSha256.size() != 64) throw std::runtime_error("pin");
+            auto token = std::filesystem::u8path(remote.at("token_file").get<std::string>());
+            if (token.is_relative()) token = file.parent_path() / token;
+            endpoint.tokenFile = token.wstring();
+            endpoint.backend = remote.value("backend", name);
+            if (remote.contains("timeout_ms")) {
+                const auto& timeout = remote.at("timeout_ms");
+                if (!timeout.is_number_unsigned() || timeout.get<uint64_t>() > 30000) throw std::runtime_error("timeout");
+                endpoint.timeoutMs = timeout.get<int>();
+            }
+            if (endpoint.backend.empty() || endpoint.timeoutMs < 100 || endpoint.timeoutMs > 30000)
+                throw std::runtime_error("selection");
+            out = DebugSession::ExternalAgent{};
+            out->remote = std::move(endpoint);
+            return scope(table[name], out->guestTarget, out->vmTarget);
+        } catch (...) { error = "Invalid remote backend profile; use numeric address, TLS pin and private token_file"; return false; }
+    }
 	std::filesystem::path path = table[name]["path"].get<std::string>();
 	if (path.is_relative()) path = file.parent_path() / path;
 	out = DebugSession::ExternalAgent{path.string(), strings(table[name].value("args", json::array()))};
 	return scope(table[name], out->guestTarget, out->vmTarget);
 }
 
-json BackendSummary(const DebugSession::BackendInfo& info) {
+json BackendSummary(const DebugSession::BackendInfo& info, const RemoteWorkInfo* work = nullptr) {
 	json out = {{"name", info.name},
 		{"kind", info.backend == IpcBackend::Hypervisor ? "hypervisor" : "veh-dll"},
 		{"stopsThreads", (info.flags & kCapStopsThreads) != 0},
@@ -111,6 +141,11 @@ json BackendSummary(const DebugSession::BackendInfo& info) {
 	json missing = json::array();
 	for (const auto& c : kOptionalCommands)
 		if (!info.Supports(c.cmd)) missing.push_back(c.name);
+    if (work) {
+        out["remote"] = {{"work_id", work->id}, {"outcome_unknown", work->outcomeUnknown}};
+        missing.push_back("frontend_conditional_breakpoints");
+        missing.push_back("target_data_pipe_artifacts");
+    }
 	if (!missing.empty()) out["unsupported"] = missing;
 	return out;
 }
@@ -128,10 +163,10 @@ json McpServer::ToolAttach(const json& args) {
     const bool vm=agent&&agent->vmTarget;
     if(vm&&pid)return {{"error","VM attachment has no OS PID; omit pid"}};
     if(!vm&&!pid)return {{"error","pid is required for host/guest attachment"}};
-	if (session_.IsAttached()) {
+	if (session_.IsAttached() && !(agent && agent->remote)) {
 		LOG_INFO("Auto-detaching from previous session (pid=%u) before new attach", session_.GetTargetPid());
 		ToolDetach({});
-	} else if (session_.GetPipeClient().IsConnected()) {
+	} else if (session_.GetPipeClient().IsConnected() && !(agent && agent->remote)) {
 		LOG_WARN("Stale pipe connection detected, cleaning up");
 		session_.GetPipeClient().StopHeartbeat();
 		session_.GetPipeClient().StopEventListener();
@@ -164,7 +199,7 @@ json McpServer::ToolAttach(const json& args) {
 
 	json ret={{"success",true},{"message",vm?"Attached to virtual machine":"Attached to process"}};
     if(!vm)ret["pid"]=pid;
-	ret["backend"] = BackendSummary(session_.GetBackendInfo());
+	ret["backend"] = BackendSummary(session_.GetBackendInfo(), session_.RemoteWork());
 	if (session_.IsGuestTarget()) ret["addressBits"] = session_.TargetAddressBits();
 	// Include main module info (saves a veh_modules round-trip)
 	auto modules = vm ? std::vector<ModuleEntry>{} : session_.GetModules();
@@ -187,10 +222,10 @@ json McpServer::ToolLaunch(const json& args) {
         return {{"error","VM attachment does not create a process. Use veh_attach with target_scope=vm."}};
     if (agent && agent->guestTarget)
         return {{"error", "Guest process launch is not supported yet. Start the program in the guest and attach with target_scope=guest."}};
-	if (session_.IsAttached()) {
+	if (session_.IsAttached() && !(agent && agent->remote)) {
 		LOG_INFO("Auto-detaching from previous session (pid=%u) before new launch", session_.GetTargetPid());
 		ToolDetach({});
-	} else if (session_.GetPipeClient().IsConnected()) {
+	} else if (session_.GetPipeClient().IsConnected() && !(agent && agent->remote)) {
 		LOG_WARN("Stale pipe connection detected, cleaning up");
 		session_.GetPipeClient().StopHeartbeat();
 		session_.GetPipeClient().StopEventListener();
@@ -257,7 +292,7 @@ json McpServer::ToolLaunch(const json& args) {
 
 	json ret = {{"success", true}, {"pid", result.pid}, {"message",
 		opts.stopOnEntry ? "Launched and attached (stopped on entry)" : "Launched and attached"}};
-	ret["backend"] = BackendSummary(session_.GetBackendInfo());
+	ret["backend"] = BackendSummary(session_.GetBackendInfo(), session_.RemoteWork());
 	if (session_.IsGuestTarget()) ret["addressBits"] = session_.TargetAddressBits();
 	auto modules = session_.GetModules();
 	if (!modules.empty()) {

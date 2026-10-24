@@ -51,6 +51,7 @@ public:
 	virtual void StopHeartbeat() = 0;
 	// Process serving the connection (0 if unknown), to check it is the one we started.
 	virtual uint32_t PeerProcessId() const { return 0; }
+	virtual bool IsRemote() const { return false; }
 };
 
 } // namespace veh

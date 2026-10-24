@@ -1,0 +1,43 @@
+#pragma once
+#include "pipe_client.h"
+#include "common/remote_channel.h"
+#include <string>
+
+namespace veh {
+struct RemoteEndpoint {
+    std::string address;
+    uint16_t port = 0;
+    std::string certificateSha256;
+    std::wstring tokenFile;
+    std::string backend;
+    int timeoutMs = 20000;
+};
+struct RemoteWorkInfo {
+    std::string id;
+    std::string scope;
+    uint32_t pid = 0;
+    uint32_t addressBits = 0;
+    bool outcomeUnknown = false;
+};
+// Reuses the existing single-reader IPC/event/heartbeat engine.
+class TcpIpcTransport final : public PipeClient {
+public:
+    TcpIpcTransport(RemoteEndpoint endpoint, std::string openRequest);
+    ~TcpIpcTransport() override { Disconnect(); }
+    bool Connect(uint32_t ignoredPid, int timeoutMs = 7000) override;
+    void Disconnect() override;
+    bool IsRemote() const override { return true; }
+    uint32_t PeerProcessId() const override { return 0; }
+    const RemoteWorkInfo& Work() const { return work_; }
+    const std::string& Error() const { return error_; }
+protected:
+    bool AsyncReadExact(void* data, DWORD size, DWORD timeoutMs) override;
+    bool AsyncWriteExact(const void* data, DWORD size, DWORD timeoutMs) override;
+    void CancelPendingIo() override;
+private:
+    RemoteEndpoint endpoint_;
+    std::string openRequest_, error_;
+    remote::Channel channel_;
+    RemoteWorkInfo work_;
+};
+} // namespace veh

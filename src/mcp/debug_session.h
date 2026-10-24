@@ -10,6 +10,7 @@
 #include <thread>
 #include <memory>
 #include "adapter/ipc_transport.h"
+#include "adapter/tcp_ipc_transport.h"
 #include "adapter/injector.h"
 #include "adapter/disassembler.h"
 #include "common/ipc_protocol.h"
@@ -155,6 +156,7 @@ public:
 		std::vector<std::string> args; // appended after --pid/--pipe
 		bool guestTarget = false; // guest PIDs/paths never name host objects
         bool vmTarget = false; // VM sessions omit --pid and have no OS target
+        std::optional<RemoteEndpoint> remote; // registered profile only; no inline credentials
 	};
 	// nullptr agent: inject the VEH DLL. Otherwise start or reuse that agent.
 	bool Attach(uint32_t pid, const ExternalAgent* agent = nullptr);
@@ -173,7 +175,12 @@ public:
     bool CompleteBackendAttach(); // after Ready/capabilities, before reporting success
     bool IsGuestTarget() const { return guestTarget_; }
     bool IsVirtualMachineTarget() const { return vmTarget_; }
-    uint32_t TargetAddressBits() const { return targetAddressBits_; }
+	uint32_t TargetAddressBits() const { return targetAddressBits_; }
+    bool IsRemoteTarget() const { return ipcTransport_->IsRemote(); }
+    const RemoteWorkInfo* RemoteWork() const {
+        const auto* tcp = dynamic_cast<const TcpIpcTransport*>(ipcTransport_.get());
+        return tcp ? &tcp->Work() : nullptr;
+    }
 	const BackendInfo& GetBackendInfo() const { return backendInfo_; }
 	struct LaunchOptions {
 		std::string program;
@@ -523,6 +530,9 @@ private:
 	BackendInfo backendInfo_;
 	void UseTransport(const std::wstring& pipeName);
 	bool ConnectExternalAgent(uint32_t pid, const ExternalAgent& agent);
+    bool ConnectRemoteWork(uint32_t pid, const ExternalAgent& agent, const LaunchOptions* launch);
+    std::string pendingRemoteLaunch_, pendingRemoteRequestId_;
+    ULONGLONG pendingRemoteLaunchAt_ = 0;
 	void FinishAttach(uint32_t pid);
 	std::unique_ptr<IDisassembler> disassembler_ = CreateDisassembler();
 

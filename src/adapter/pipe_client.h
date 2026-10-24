@@ -46,13 +46,14 @@ public:
 	void StartHeartbeat() override;
 	void StopHeartbeat() override;
 
-private:
+protected:
 	void ReaderThread();
 	void HeartbeatThread();
 
 	// Overlapped I/O helpers
-	bool AsyncReadExact(void* buf, DWORD size, DWORD timeoutMs = 3000);
-	bool AsyncWriteExact(const void* buf, DWORD size, DWORD timeoutMs = 3000);
+	virtual bool AsyncReadExact(void* buf, DWORD size, DWORD timeoutMs = 3000);
+	virtual bool AsyncWriteExact(const void* buf, DWORD size, DWORD timeoutMs = 3000);
+	virtual void CancelPendingIo();
 
 	std::wstring pipeName_;
 	HANDLE pipe_ = INVALID_HANDLE_VALUE;

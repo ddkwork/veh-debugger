@@ -13,6 +13,7 @@ add_executable(veh-mcp-server
 	tools_checkpoint.cpp
 	tools_orchestration.cpp
 	debug_session.cpp
+	remote_work.cpp
 	batch_executor.cpp
 	trace_basic_blocks_tool.cpp
 	trace_code_artifact.cpp
@@ -30,6 +31,7 @@ add_executable(veh-mcp-server
 
 target_link_libraries(veh-mcp-server PRIVATE
 	veh_common
+	veh_remote
 	nlohmann_json
 	Zydis
 	asmtk

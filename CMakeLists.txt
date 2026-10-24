@@ -44,7 +44,13 @@ target_include_directories(nlohmann_json INTERFACE ${CMAKE_SOURCE_DIR}/third_par
 add_library(veh_common INTERFACE)
 target_include_directories(veh_common INTERFACE ${CMAKE_SOURCE_DIR}/src/common)
 
+add_library(veh_remote STATIC src/common/remote_channel.cpp src/adapter/tcp_ipc_transport.cpp)
+target_include_directories(veh_remote PUBLIC ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(veh_remote PUBLIC veh_common nlohmann_json ws2_32 secur32 crypt32 bcrypt advapi32)
+target_compile_definitions(veh_remote PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX SECURITY_WIN32 UNICODE _UNICODE)
+
 add_subdirectory(src/dll)
 add_subdirectory(src/adapter)
 add_subdirectory(src/mcp)
+add_subdirectory(src/remote)
 add_subdirectory(test_target)

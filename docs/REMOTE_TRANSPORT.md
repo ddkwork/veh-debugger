@@ -1,0 +1,142 @@
+# Authenticated remote backend transport
+
+MCP can select a registered TCP backend through the existing `backend` argument.
+The frontend runs on the analyst workstation. `veh-remote-runner` runs beside the
+backend executable on the analysis Windows VM. For VirtualBox/WHPX, put the runner
+and bridge on the analysis **host VM**, never in the inner analyzed guest.
+No guest helper, service, or injected agent is required by this transport.
+
+The runner owns backend processes, their named pipes, and host target creation.
+The frontend does not call local CreateProcess/OpenProcess/Toolhelp for a remote
+target. Existing VEH IPC command and event frames travel unchanged inside TLS.
+Local named-pipe connections remain available.
+
+## Private configuration
+
+Keep both profiles and the shared secret outside Git, for example under ignored
+`private/`. Paths are resolved relative to the profile containing them. Use numeric
+IPv4/IPv6 addresses; DNS resolution is deliberately excluded from connection deadlines.
+
+On the analysis VM, create a TLS server certificate with a private key in the
+runner account's CurrentUser MY certificate store. Pin the SHA-256 digest of its
+DER certificate (64 hexadecimal characters), rather than its usual SHA-1 thumbprint.
+Provision the same 32 random bytes as 64 hex characters in a separate token file
+on each endpoint. An optional LF or CRLF is accepted. Its owner and sensitive
+allow permissions must be restricted to the account, SYSTEM, and Administrators.
+Never pass the token as a CLI argument or put it in either JSON profile.
+
+Runner profile, with neutral backend names:
+
+```json
+{
+  "listen": {"address": "192.0.2.10", "port": 4765},
+  "certificate_sha256": "<64-hex-sha256>",
+  "token_file": "remote.key",
+  "backends": {
+    "driver": {
+      "path": "driver-backend.exe",
+      "args": [],
+      "target_scope": "host",
+      "allow_launch": true
+    },
+    "vm-guest": {
+      "path": "vm-bridge.exe",
+      "args": ["--host-owner", "1"],
+      "target_scope": "guest",
+      "allow_launch": false
+    }
+  }
+}
+```
+
+Supply the bridge's existing VM-selection and Windows context arguments in its
+registered `args`. Use a separate entry per VM/scope. Backend executable and
+startup arguments are chosen by the resident profile; callers cannot override
+them over the network. Do not put credentials in backend arguments.
+
+Start the runner under its configured Windows account:
+
+```text
+veh-remote-runner --profile private/runner.json
+```
+
+Frontend `veh-backends.json` (or the file selected by `VEH_BACKENDS`):
+
+```json
+{
+  "remote-driver": {
+    "target_scope": "host",
+    "remote": {
+      "address": "192.0.2.10",
+      "port": 4765,
+      "certificate_sha256": "<64-hex-sha256>",
+      "token_file": "remote.key",
+      "backend": "driver",
+      "timeout_ms": 20000
+    }
+  }
+}
+```
+
+For the bridge use `target_scope: "guest"` and `remote.backend: "vm-guest"`.
+A VM-wide entry instead uses `target_scope: "vm"` in both profiles; attach without
+a PID. Profiles cannot combine `path` with `remote` or override remote `agent_args`.
+
+Use `veh_attach(pid=1234, backend="remote-driver")` or
+`veh_launch(program="C:/Lab/sample.exe", backend="remote-driver")`.
+The program, working directory, and environment belong to the **remote** analysis
+VM. Host launch starts suspended; continue releases its owned initial thread.
+VirtualBox/WHPX **guest process launch is unsupported**: attach to an existing
+guest PID. Whole-VM attach does not create a process either.
+
+## Authentication and work lifetime
+
+TLS 1.2 encrypts the stream and the client verifies the pinned server certificate
+and its validity interval. One application authentication exchange follows TLS:
+the server supplies a fresh 32-byte nonce and verifies an HMAC-SHA256 proof over
+`VEH-REMOTE-CLIENT-v1 || nonce`. The token itself is never transmitted. Captured
+proofs cannot authenticate another connection. No tokens or proofs are attached
+to IPC commands; TLS renegotiation and repeated authentication on an established
+work connection are rejected. Runner diagnostics contain fixed statuses, without
+request bodies, token values, or exception strings.
+
+The runner bounds simultaneous connections to 8, retained jobs to 32, and tracked
+peer addresses to 128. Each peer address gets at most 16 connection attempts and
+5 authentication failures per minute. Authentication and control exchanges use
+bounded local monotonic deadlines.
+
+Unexpected disconnection retains the backend and its events for up to 60 seconds.
+Attach again with the same backend, scope, and PID to resume that work; the returned
+`backend.remote.work_id` remains stable. One connection owns a work at a time.
+Reconnect refuses while an accepted command remains in flight. Commands are
+never automatically replayed. `backend.remote.outcome_unknown` reports uncertain
+delivery/effects; inspect target state before issuing another mutating command.
+The frontend reuses a launch request identity when retrying the same uncertain
+launch during this window, instead of creating a second process.
+
+Explicit detach ends the resident work and releases an owned host target, including
+its initial suspended thread. Lease expiry or runner shutdown tears down owned
+agents and targets. An attached pre-existing host target is never put in the
+runner's kill-on-close job. VM lifetime remains governed by the bridge's existing
+host-owner semantics.
+
+## Supported boundaries
+
+Capabilities still come from the backend. The host runner additionally implements
+host target metadata from its retained process handle; guest/VM metadata must
+come from the bridge. This transport does not invent guest launch or debugger
+commands that a backend has not implemented.
+
+Frontend conditional breakpoint evaluation and target-side trace data pipes
+(`code_output="file"`, `events_output="file"`) are explicitly unsupported remotely.
+Use inline trace collection or the frontend's `output_file` export. Registered
+backend selection adds no eager MCP tools or per-command authentication fields;
+direct, toolbox, batch, and breakpoint-action calls share the existing dispatcher.
+
+`test/test_remote_transport.py` exercises this boundary with local TLS and
+synthetic backend fixtures. It does not prove live driver or VirtualBox/WHPX VM
+operation; run the backend repository's protected-profile `mcp_remote.py` TCP
+regression against each configured analysis VM before operational deployment.
+
+The adapter's existing DAP TCP listener and kernel-debug TCP transport are separate
+interfaces. They do not acquire the runner's authentication by sharing a port type.

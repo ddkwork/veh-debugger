@@ -1828,6 +1828,9 @@ json McpServer::DispatchTool(const std::string& name, const json& args, bool* kn
 	const ToolDef* tool = FindTool(name);
 	if (known) *known = tool != nullptr;
 	if (!tool) return {{"error", "Unknown tool: " + name}};
+    if (session_.IsRemoteTarget() && tool->category == std::string("breakpoint") &&
+        args.contains("condition") && args["condition"] != "" && args["condition"] != nullptr)
+        return {{"error", "Conditional breakpoint evaluation is not supported by this remote path"}};
 	return (this->*tool->handler)(args);
 }
 

@@ -8,6 +8,7 @@
 #include <TlHelp32.h>
 #include <Psapi.h>
 #include <utility>
+#include <nlohmann/json.hpp>
 #include <bcrypt.h>
 #pragma comment(lib, "bcrypt.lib")
 
@@ -90,7 +91,7 @@ DebugSession::~DebugSession() {
 }
 
 void DebugSession::UseTransport(const std::wstring& pipeName) {
-	if (pipeName == transportPipe_) return;
+	if (pipeName == transportPipe_ && !ipcTransport_->IsRemote()) return;
 	ipcTransport_ = std::make_unique<PipeClient>(pipeName);
 	transportPipe_ = pipeName;
 }
@@ -176,6 +177,7 @@ void DebugSession::QueryBackendInfo() {
 
 bool DebugSession::Attach(uint32_t pid, const ExternalAgent* agent) {
 	lastAttachError_.clear();
+    if (agent && agent->remote) return ConnectRemoteWork(pid, *agent, nullptr);
 	if ((!pid && (!agent || !agent->vmTarget)) || (pid && agent && agent->vmTarget)) { lastAttachError_ = "VM scope requires no PID; process scopes require a nonzero PID"; return false; }
 	backendInfo_ = {};
 
@@ -261,7 +263,7 @@ void DebugSession::FinishAttach(uint32_t pid) {
 	targetPid_ = pid;
 	attached_ = true;
 	// External attach is provisional until the authenticated backend reports scope.
-	if (externalAttachPending_ || guestTarget_ || vmTarget_) return;
+	if (externalAttachPending_ || guestTarget_ || vmTarget_ || IsRemoteTarget()) return;
 	// VM_READ: 조건부 BP의 [addr]/value 평가가 이벤트 콜백 스레드에서 ReadProcessMemory로
 	// 값을 읽는다(IPC ReadMemory는 콜백 스레드에서 재진입 불가). 실패 시 VM_READ 없이 폴백.
 	targetProcess_ = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE | PROCESS_VM_READ, FALSE, pid);
@@ -285,6 +287,9 @@ void DebugSession::FinishAttach(uint32_t pid) {
 }
 
 bool DebugSession::CompleteBackendAttach() {
+    if (IsRemoteTarget() && !backendInfo_.reported) {
+        lastAttachError_ = "Remote backend did not negotiate capabilities"; return false;
+    }
     const bool peerGuest = backendInfo_.reported && (backendInfo_.flags & kCapGuestTarget);
     const bool peerVm = backendInfo_.reported && (backendInfo_.flags & kCapVirtualMachineTarget);
     if (!externalAttachPending_) {
@@ -308,7 +313,7 @@ bool DebugSession::CompleteBackendAttach() {
         targetAddressBits_=0;disassembler_=CreateDisassembler(true); // Pure computation default, not CPU metadata.
         externalAttachPending_=false;return true; // No host target handle or process monitor.
     }
-    if (guestTarget_) {
+    if (guestTarget_ || IsRemoteTarget()) {
         std::vector<uint8_t> bytes;
         GetTargetInfoResponse info{};
         if (!backendInfo_.Supports(IpcCommand::GetTargetInfo) ||
@@ -318,7 +323,7 @@ bool DebugSession::CompleteBackendAttach() {
             return false;
         }
         memcpy(&info, bytes.data(), sizeof(info));
-        if (info.status != IpcStatus::Ok || info.scope != IpcTargetScope::Guest ||
+        if (info.status != IpcStatus::Ok || info.scope != (guestTarget_ ? IpcTargetScope::Guest : IpcTargetScope::Host) ||
             info.pid != targetPid_ || (info.addressBits != 32 && info.addressBits != 64)) {
             lastAttachError_ = "Guest backend target identity or address width validation failed.";
             return false;
@@ -335,6 +340,12 @@ bool DebugSession::CompleteBackendAttach() {
 
 DebugSession::LaunchResult DebugSession::Launch(const LaunchOptions& opts) {
 	LaunchResult result;
+    if (opts.agent && opts.agent->remote) {
+        result.ok = ConnectRemoteWork(0, *opts.agent, &opts);
+        result.pid = result.ok ? targetPid_ : 0;
+        result.error = result.ok ? std::string() : lastAttachError_;
+        return result;
+    }
     // Reject before local file lookup, process creation, or session mutation.
     if(opts.agent&&opts.agent->vmTarget){result.error="VM sessions do not create host processes.";return result;}
     if (opts.agent && opts.agent->guestTarget) {
@@ -541,13 +552,13 @@ bool DebugSession::Terminate(uint32_t exitCode) {
 }
 
 bool DebugSession::IsTargetAlive() {
-	if (guestTarget_ || vmTarget_) {
+	if (guestTarget_ || vmTarget_ || IsRemoteTarget()) {
         std::vector<uint8_t> bytes;
         GetTargetInfoResponse info{};
         if (!attached_ || externalAttachPending_ || !ipcTransport_->SendAndReceive(
                 IpcCommand::GetTargetInfo, nullptr, 0, bytes) || bytes.size() != sizeof(info)) return false;
         memcpy(&info, bytes.data(), sizeof(info));
-        return info.status == IpcStatus::Ok && info.scope == (vmTarget_?IpcTargetScope::VirtualMachine:IpcTargetScope::Guest) &&
+        return info.status == IpcStatus::Ok && info.scope == (vmTarget_ ? IpcTargetScope::VirtualMachine : guestTarget_ ? IpcTargetScope::Guest : IpcTargetScope::Host) &&
             info.pid == targetPid_ && info.addressBits == targetAddressBits_;
     }
 	if (!targetProcess_) return false;
@@ -774,6 +785,7 @@ bool DebugSession::Pause(uint32_t threadId) {
 }
 
 uint32_t DebugSession::ResumeMainThread(uint32_t requestedThreadId) {
+    if (IsRemoteTarget()) return 0;
 	if (mainThreadResumed_ || launchedMainThreadId_ == 0) return 0;
 	if (requestedThreadId != 0 && requestedThreadId != launchedMainThreadId_) return 0;
 
@@ -850,6 +862,7 @@ bool DebugSession::IsThreadOwnedByTarget(uint32_t threadId) const {
     // The authenticated guest backend owns CID validation for its events. Calling
     // host Toolhelp here would validate an unrelated namespace; IPC reentry from
     // the event reader would deadlock.
+    if (IsRemoteTarget()) return attached_ && !externalAttachPending_ && backendInfo_.reported;
     if (guestTarget_) return !externalAttachPending_ && backendInfo_.reported &&
         (backendInfo_.flags & kCapGuestTarget) != 0;
 
@@ -1933,6 +1946,7 @@ void DebugSession::SetEventCallback(EventCallback cb) {
 
 void DebugSession::StartProcessMonitor() {
 	StopProcessMonitor();
+    if (IsRemoteTarget()) return;
 	if (!targetProcess_) return;
 
 	HANDLE hWait = OpenProcess(SYNCHRONIZE, FALSE, targetPid_);
