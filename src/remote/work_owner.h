@@ -28,8 +28,10 @@ public:
     Json Describe() const;
     bool Matches(const std::string& backend, const std::string& scope, uint32_t pid) const;
     bool MatchesRequest(const std::string& backend, const std::string& requestId) const;
+    std::string LaunchKey() const;
     ULONGLONG Expiry() const;
     bool Closing() const;
+    bool CleanupReady() const;
     bool HasPendingWork(const std::shared_ptr<Channel>&) const;
     void Stop();
     void Notify(std::function<void()> notify);
@@ -37,6 +39,8 @@ private:
     struct Request { uint32_t command; std::vector<uint8_t> payload; uint64_t epoch; };
     struct Frame { uint32_t command; std::vector<uint8_t> payload; };
     bool Initialize(const BackendProfile&, const Json&, std::string& code);
+    static void CALLBACK AgentExited(void*, BOOLEAN);
+    bool BackendUnavailable() const; // mutex_ held
     void OnEvent(uint32_t, const uint8_t*, uint32_t);
     bool Send(const std::shared_ptr<Channel>&, uint32_t, const void*, uint32_t);
     bool FlushEvents();
@@ -44,7 +48,7 @@ private:
     std::vector<uint8_t> Execute(const Request&, bool& response);
     bool ResumeLaunchThread(uint32_t requestedThread);
     mutable std::mutex mutex_;
-    std::mutex sendMutex_;
+    std::mutex sendMutex_, launchMutex_;
     std::condition_variable cv_;
     std::unique_ptr<PipeClient> backend_;
     std::shared_ptr<Channel> peer_;
@@ -54,11 +58,12 @@ private:
     size_t eventBytes_ = 0, requestBytes_ = 0;
     uint64_t epoch_ = 0;
     bool active_ = false, inFlight_ = false, closing_ = false, stopped_ = false;
-    bool outcomeUnknown_ = false, releaseTarget_ = false;
+    bool outcomeUnknown_ = false, releaseTarget_ = false, ending_ = false, published_ = false;
     ULONGLONG disconnectedAt_ = 0;
     std::function<void()> notify_;
     std::string id_, backendName_, scope_, requestId_;
     uint32_t pid_ = 0, addressBits_ = 0, mainThreadId_ = 0;
+    HANDLE agentWait_ = nullptr;
     HANDLE agentProcess_ = nullptr, targetProcess_ = nullptr, primaryThread_ = nullptr, job_ = nullptr;
 };
 } // namespace veh::remote

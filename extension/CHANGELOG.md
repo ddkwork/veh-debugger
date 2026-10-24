@@ -18,6 +18,8 @@
 - **Event-driven MCP waits** -- the main loop, heartbeat and kernel-debug pipe wait for input or events instead of periodic timer polling.
 
 ### Fixed
+- **Remote backend lifetime recovery** -- detach ends a work even without an acknowledgement; closing/dead agents are excluded from reattachment and exact process-handle notifications cancel dead connections. Host targets survive backend death, while retired launch identities still prevent duplicate creation. Rapid detach/attach no longer selects jobs waiting for cleanup.
+- **VEH lifecycle acknowledgements** -- Detach and Shutdown keep their final reply available until the client closes, with a bounded drain wait instead of immediately discarding buffered data or flushing forever.
 - **Remote long-running commands** -- a pending command now keeps its TCP connection through idle input intervals, using the bounded backend command deadline; response delivery remains in flight until complete.
 - **Remote launch failure recovery** -- failures before OpenWork delivery and explicit resident rejections clear launch retry state. Lost or ambiguous replies retain the same request identity, preventing duplicate process creation on retry.
 - **In-flight breakpoint removal** -- a debugger INT3 dispatched after its breakpoint was removed now replays the restored instruction instead of skipping its first byte as a program-owned DebugBreak. This prevents instruction corruption and target crashes during repeated caller traces; original program INT3 instructions retain their normal handling.

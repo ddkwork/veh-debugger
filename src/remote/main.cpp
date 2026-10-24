@@ -110,7 +110,19 @@ public:
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if (stopping_) { code = "unavailable"; return {}; }
+            PruneLaunches();
+            if (operation == "launch" && retiredLaunches_.count(name + ":" + requestId)) {
+                code = "expired"; outcomeUnknown = true; return {};
+            }
             for (const auto& owner : owners_) {
+                if (owner->Closing()) {
+                    // Attach needs a fresh agent, not a retiring/dead transport.
+                    // A launch retry must still not create a duplicate request.
+                    if (operation == "launch" && owner->MatchesRequest(name, requestId)) {
+                        code = "expired"; outcomeUnknown = true; return {};
+                    }
+                    continue;
+                }
                 if ((operation == "launch" && owner->MatchesRequest(name, requestId)) ||
                     (operation == "attach" && owner->Matches(name, scope, pid))) {
                     if (!owner->Reserve(peer)) { code = owner->Closing() ? "expired" : "busy"; outcomeUnknown = true; return {}; }
@@ -118,6 +130,9 @@ public:
                 }
             }
             if (owners_.size() >= 32) { code = "busy"; return {}; }
+            const auto launchCount = std::count_if(owners_.begin(), owners_.end(),
+                [](const auto& owner) { return !owner->LaunchKey().empty(); });
+            if (operation == "launch" && retiredLaunches_.size() + launchCount >= 128) { code = "busy"; return {}; }
         }
         auto owner = WorkOwner::Open(profile->second, request, code);
         if (!owner) return {};
@@ -130,6 +145,12 @@ public:
         return owner;
     }
 private:
+    void PruneLaunches() {
+        const auto now = GetTickCount64();
+        for (auto it = retiredLaunches_.begin(); it != retiredLaunches_.end();) {
+            if (it->second <= now) it = retiredLaunches_.erase(it); else ++it;
+        }
+    }
     void Reap() {
         std::unique_lock<std::mutex> lock(mutex_);
         while (!stopping_) {
@@ -137,7 +158,11 @@ private:
             std::vector<std::shared_ptr<WorkOwner>> expired;
             for (auto it = owners_.begin(); it != owners_.end();) {
                 const auto expiry = (*it)->Expiry();
-                if ((*it)->Closing() || (expiry && expiry <= GetTickCount64())) {
+                if ((*it)->CleanupReady() || (expiry && expiry <= GetTickCount64())) {
+                    const auto key = (*it)->LaunchKey();
+                    // Longer than the frontend's 60-second uncertain retry window.
+                    // Preserve deduplication after the old agent's work is removed.
+                    if (!key.empty()) retiredLaunches_[key] = GetTickCount64() + 120000;
                     expired.push_back(*it); it = owners_.erase(it);
                 } else { if (expiry) next = std::min(next, expiry); ++it; }
             }
@@ -155,6 +180,7 @@ private:
     std::condition_variable cv_;
     bool stopping_ = false;
     std::vector<std::shared_ptr<WorkOwner>> owners_;
+    std::map<std::string, ULONGLONG> retiredLaunches_;
     std::thread reaper_;
 };
 struct Attempts {

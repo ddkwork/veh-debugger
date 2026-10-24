@@ -120,6 +120,17 @@ missing program does not require restarting MCP. Lost replies, existing-work
 busy replies, and replies from older runners without an explicit outcome remain
 uncertain and retain duplicate-launch protection.
 
+Agent process exit is detected through its retained process handle and cancels the
+work connection. Attach to the same PID opens a fresh backend; ending/dead work is
+never reused while the cleanup thread waits for another agent. Detach retires work
+even if its acknowledgement is missing or late. An already-published host target
+survives backend death; a still-owned initial suspension is released during cleanup.
+Failed startup before work publication still cleans up its newly created target.
+Retired launch identities are retained for two minutes (at most 128 active/retired
+launch identities) so a late retry cannot duplicate a target after agent death.
+The VEH DLL preserves its final Detach/Shutdown acknowledgement until peer close
+or a bounded three-second drain deadline, including clients that do not read it.
+
 Explicit detach ends the resident work and releases an owned host target, including
 its initial suspended thread. Lease expiry or runner shutdown tears down owned
 agents and targets. An attached pre-existing host target is never put in the
@@ -140,9 +151,16 @@ backend selection adds no eager MCP tools or per-command authentication fields;
 direct, toolbox, batch, and breakpoint-action calls share the existing dispatcher.
 
 `test/test_remote_transport.py` exercises this boundary with local TLS and
-synthetic backend fixtures. It does not prove live driver or VirtualBox/WHPX VM
-operation; run the backend repository's protected-profile `mcp_remote.py` TCP
-regression against each configured analysis VM before operational deployment.
+synthetic backend fixtures, missing/late detach replies, forced owned-agent exit,
+rapid reconnection, preserved host target lifetime and delayed reads of real VEH
+DLL lifecycle acknowledgements. It does not prove live driver or VirtualBox/WHPX VM
+operation. Run the backend repository's full
+`mcp_remote.py --via-tcp <private-backends.json>` regression against each configured
+analysis VM before operational deployment. `--tcp-profile` runs only its explicitly
+listed checks and must not be treated as the full backend suite. Backend agents
+must acknowledge Detach/Shutdown and preserve the reply until the reader consumes
+it or closes; a successful transport fixture run cannot establish that contract
+for a different agent implementation.
 
 The adapter's existing DAP TCP listener and kernel-debug TCP transport are separate
 interfaces. They do not acquire the runner's authentication by sharing a port type.

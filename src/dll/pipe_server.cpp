@@ -789,6 +789,20 @@ void PipeServer::ServerThread() {
 
 			LOG_DEBUG("IPC cmd=0x%04X size=%u", hdr.command, hdr.payloadSize);
 			HandleCommand(hdr.command, payload.data(), hdr.payloadSize);
+			if ((hdr.command == static_cast<uint32_t>(IpcCommand::Detach) ||
+			     hdr.command == static_cast<uint32_t>(IpcCommand::Shutdown)) && (!connected_ || !running_)) {
+				// DisconnectNamedPipe discards unread response bytes. Keep the pipe
+				// intact until the peer reads the final acknowledgement and closes.
+				// A stopped/unreading client must not trap this server in an unbounded flush.
+				const auto deadline = GetTickCount64() + 3000;
+				uint8_t discarded = 0;
+				for (;;) {
+					const auto now = GetTickCount64();
+					if (now >= deadline) break;
+					const auto remaining = static_cast<DWORD>(deadline - now);
+					if (!remaining || !AsyncReadExact(&discarded, 1, remaining)) break;
+				}
+			}
 			// A long command (memory search, trace) is activity too; do not let its
 			// duration count toward the idle heartbeat timeout.
 			lastCommandTime_ = GetTickCount64();

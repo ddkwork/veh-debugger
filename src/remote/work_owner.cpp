@@ -72,6 +72,8 @@ std::shared_ptr<WorkOwner> WorkOwner::Open(const BackendProfile& profile, const 
     try {
         if (!owner->Initialize(profile, request, code)) { owner->Stop(); return {}; }
     } catch (...) { code = "invalid"; owner->Stop(); return {}; }
+    if (!RegisterWaitForSingleObject(&owner->agentWait_, owner->agentProcess_, AgentExited,
+        owner.get(), INFINITE, WT_EXECUTEONLYONCE)) { code = "unavailable"; owner->Stop(); return {}; }
     owner->worker_ = std::thread([owner] { owner->Worker(); });
     return owner;
 }
@@ -182,7 +184,34 @@ bool WorkOwner::Matches(const std::string& backend, const std::string& scope, ui
 bool WorkOwner::MatchesRequest(const std::string& backend, const std::string& id) const {
     return !requestId_.empty() && backendName_ == backend && requestId_ == id;
 }
-bool WorkOwner::Closing() const { std::lock_guard<std::mutex> lock(mutex_); return closing_; }
+std::string WorkOwner::LaunchKey() const {
+    return requestId_.empty() ? std::string() : backendName_ + ":" + requestId_;
+}
+bool WorkOwner::BackendUnavailable() const {
+    return (agentProcess_ && WaitForSingleObject(agentProcess_, 0) == WAIT_OBJECT_0) ||
+        (backend_ && !backend_->IsConnected());
+}
+void CALLBACK WorkOwner::AgentExited(void* context, BOOLEAN) {
+    auto* owner = static_cast<WorkOwner*>(context);
+    std::lock_guard<std::mutex> lock(owner->mutex_);
+    if (owner->stopped_) return;
+    owner->closing_ = true; owner->releaseTarget_ = owner->releaseTarget_ || owner->published_;
+    // Do not leave our initial OS suspension waiting behind unrelated agent
+    // teardown. Serialize with Continue/Stop before releasing this exact handle.
+    if (owner->published_ && !owner->ResumeLaunchThread(0)) owner->outcomeUnknown_ = true;
+    owner->outcomeUnknown_ = owner->outcomeUnknown_ || owner->inFlight_ || !owner->requests_.empty();
+    if (owner->peer_) owner->peer_->Cancel();
+    owner->cv_.notify_all();
+    if (owner->notify_) owner->notify_();
+}
+bool WorkOwner::Closing() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return ending_ || closing_ || BackendUnavailable();
+}
+bool WorkOwner::CleanupReady() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return closing_ || BackendUnavailable();
+}
 bool WorkOwner::HasPendingWork(const std::shared_ptr<Channel>& peer) const {
     std::lock_guard<std::mutex> lock(mutex_);
     return peer_ == peer && active_ && !closing_ && (inFlight_ || !requests_.empty());
@@ -193,7 +222,8 @@ ULONGLONG WorkOwner::Expiry() const {
 }
 bool WorkOwner::Reserve(const std::shared_ptr<Channel>& peer) {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (peer_ || closing_ || inFlight_ || !requests_.empty() || GetTickCount64() >= disconnectedAt_ + 60000) return false;
+    if (peer_ || ending_ || closing_ || BackendUnavailable() || inFlight_ || !requests_.empty() || GetTickCount64() >= disconnectedAt_ + 60000) return false;
+    published_ = true;
     peer_ = peer; active_ = false; ++epoch_;
     return true;
 }
@@ -259,12 +289,18 @@ bool WorkOwner::FlushEvents() {
 }
 bool WorkOwner::Submit(const std::shared_ptr<Channel>& peer, uint32_t command, std::vector<uint8_t> payload) {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (peer_ != peer || !active_ || closing_ || requests_.size() >= 16 ||
+    if (peer_ != peer || !active_ || ending_ || closing_ || BackendUnavailable() || requests_.size() >= 16 ||
         requestBytes_ + payload.size() > 64 * 1024 * 1024) return false;
+    if (command == static_cast<uint32_t>(IpcCommand::Detach) || command == static_cast<uint32_t>(IpcCommand::Shutdown)) {
+        // Closing work must never be selected by the next attach, even while
+        // its final acknowledgement is pending. The worker still drains in order.
+        ending_ = true; releaseTarget_ = true;
+    }
     requestBytes_ += payload.size();
     requests_.push_back({command, std::move(payload), epoch_}); cv_.notify_one(); return true;
 }
 bool WorkOwner::ResumeLaunchThread(uint32_t requestedThread) {
+    std::lock_guard<std::mutex> lock(launchMutex_);
     if (!primaryThread_ || (requestedThread && requestedThread != mainThreadId_)) return true;
     if (ResumeThread(primaryThread_) == static_cast<DWORD>(-1)) return false;
     CloseHandle(primaryThread_); primaryThread_ = nullptr;
@@ -281,7 +317,10 @@ std::vector<uint8_t> WorkOwner::Execute(const Request& request, bool& response) 
     uint32_t resumedThread = 0;
     if (command == IpcCommand::Continue && request.payload.size() >= sizeof(ContinueRequest)) {
         ContinueRequest value{}; memcpy(&value, request.payload.data(), sizeof(value));
-        if (primaryThread_ && (!value.threadId || value.threadId == mainThreadId_)) resumedThread = mainThreadId_;
+        {
+            std::lock_guard<std::mutex> lock(launchMutex_);
+            if (primaryThread_ && (!value.threadId || value.threadId == mainThreadId_)) resumedThread = mainThreadId_;
+        }
         if (!ResumeLaunchThread(value.threadId)) return Bytes(IpcStatus::Error);
         if (!value.wantDetails) { response = false; backend_->SendCommand(command, request.payload.data(), static_cast<uint32_t>(request.payload.size())); return {}; }
     }
@@ -289,19 +328,16 @@ std::vector<uint8_t> WorkOwner::Execute(const Request& request, bool& response) 
         response = false; backend_->SendCommand(command); return {};
     }
     if (command == IpcCommand::Detach || command == IpcCommand::Shutdown) {
-        if (!ResumeLaunchThread(0)) return Bytes(IpcStatus::Error);
+        const bool resumed = ResumeLaunchThread(0);
         std::vector<uint8_t> detached;
         response = false;
-        if (!backend_->SendAndReceive(command, request.payload.data(), static_cast<uint32_t>(request.payload.size()), detached, 3000) ||
-            detached.size() < sizeof(IpcStatus)) {
-            std::lock_guard<std::mutex> lock(mutex_); outcomeUnknown_ = true; if (peer_) peer_->Cancel(); return {};
-        }
-        IpcStatus status{}; memcpy(&status, detached.data(), sizeof(status));
-        if (status != IpcStatus::Ok) {
-            std::lock_guard<std::mutex> lock(mutex_); outcomeUnknown_ = true; if (peer_) peer_->Cancel(); return {};
-        }
+        const bool received = backend_->SendAndReceive(command, request.payload.data(),
+            static_cast<uint32_t>(request.payload.size()), detached, 3000);
+        IpcStatus status = IpcStatus::Error;
+        if (received && detached.size() >= sizeof(status)) memcpy(&status, detached.data(), sizeof(status));
         {
             std::lock_guard<std::mutex> lock(mutex_);
+            outcomeUnknown_ = outcomeUnknown_ || !resumed || !received || status != IpcStatus::Ok;
             releaseTarget_ = true; closing_ = true;
             if (peer_) peer_->Cancel();
             if (notify_) notify_();
@@ -375,9 +411,11 @@ void WorkOwner::Stop() {
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (stopped_) return;
+        if (published_ && BackendUnavailable()) releaseTarget_ = true;
         stopped_ = true; closing_ = true; peer = peer_; peer_.reset(); cv_.notify_all();
     }
     if (peer) peer->Cancel();
+    if (agentWait_) { UnregisterWaitEx(agentWait_, INVALID_HANDLE_VALUE); agentWait_ = nullptr; }
     if (backend_) {
         // Ask an idle backend to release its stops/transactions before teardown.
         // Never wait behind an uncertain command holding the exchange mutex.
@@ -394,6 +432,7 @@ void WorkOwner::Stop() {
         }
         CloseHandle(agentProcess_); agentProcess_ = nullptr;
     }
+    if (releaseTarget_) ResumeLaunchThread(0);
     if (releaseTarget_ && job_) {
         JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
         SetInformationJobObject(job_, JobObjectExtendedLimitInformation, &limits, sizeof(limits));

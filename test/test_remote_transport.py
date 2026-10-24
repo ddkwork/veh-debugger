@@ -122,7 +122,7 @@ def raw_threads(peer):
             status, count = struct.unpack_from("<II", payload)
             assert (status, count) == (0, 1), "raw thread metadata"
             assert struct.unpack_from("<I", payload, 8)[0] == 77, "raw thread identity"
-            return
+            return payload
     raise AssertionError("thread reply missing")
 
 
@@ -227,6 +227,191 @@ def wait_file(path, seconds=5):
             raise TimeoutError("launched process completion")
         # Event/deadline wait yields immediately when the condition becomes visible.
         threading.Event().wait(min(0.02, remaining))
+
+
+def owned_handle(pid, executable, parent, directory):
+    image = ctypes.create_unicode_buffer(32768)
+    size = wintypes.DWORD(len(image))
+    handle = KERNEL.OpenProcess(0x00100000 | 0x1000 | 0x0001, False, pid)
+    assert handle, "owned process handle"
+    try:
+        assert KERNEL.QueryFullProcessImageNameW(handle, 0, image, ctypes.byref(size))
+        assert Path(image.value).resolve() == Path(executable).resolve(), "owned executable mismatch"
+        actual_parent = int(powershell(
+            f"(Get-CimInstance Win32_Process -Filter 'ProcessId={pid}').ParentProcessId", directory))
+        assert actual_parent == parent, "owned parent chain mismatch"
+        return handle
+    except BaseException:
+        KERNEL.CloseHandle(handle)
+        raise
+
+
+def lifecycle_checks(client, runner, directory, target_handles, port, pin, token):
+    seen = set()
+    def attach(alias, pid):
+        result = client.tool("veh_attach", {"backend": alias, "pid": pid}, timeout=25)
+        assert result.get("success"), result
+        agent = int(client.tool("veh_threads")["threads"][0]["name"].split(":")[1])
+        assert agent not in seen, "retiring/dead agent reused"
+        seen.add(agent)
+        return agent
+
+    # No acknowledgement, then a late acknowledgement, while the reaper may
+    # still be waiting for earlier agents. None may poison a new attach.
+    for alias, pid in (("silent", 424250), ("late", 424251)):
+        attach(alias, pid)
+        for _ in range(2):
+            assert client.tool("veh_detach").get("success")
+            threading.Event().wait(0.5)
+            attach(alias, pid)
+        assert client.tool("veh_detach").get("success")
+
+    agent = attach("silent", 424252)
+    handle = owned_handle(agent, BIN / "guest_backend_fixture.exe", runner.pid, directory)
+    try:
+        assert KERNEL.TerminateProcess(handle, 1)
+        assert KERNEL.WaitForSingleObject(handle, 5000) == 0
+        attach("silent", 424252)
+        assert client.tool("veh_detach").get("success")
+    finally:
+        KERNEL.CloseHandle(handle)
+
+    # A dead agent must not make the resident job kill its launched host target.
+    marker, release = directory / "agent-death.txt", directory / "release.txt"
+    code = ("from pathlib import Path;import time;Path(" + repr(str(marker)) + ").write_text('running');"
+            + "\nwhile not Path(" + repr(str(release)) + ").exists():time.sleep(.02)")
+    launched = client.tool("veh_launch", {
+        "backend": "host", "program": sys.executable, "args": ["-c", code], "stopOnEntry": True}, timeout=25)
+    assert launched.get("success"), launched
+    target = owned_handle(launched["pid"], sys.executable, runner.pid, directory)
+    target_handles.append(target)
+    assert not marker.exists()
+    agent = int(client.tool("veh_threads")["threads"][0]["name"].split(":")[1])
+    handle = owned_handle(agent, BIN / "guest_backend_fixture.exe", runner.pid, directory)
+    try:
+        assert KERNEL.TerminateProcess(handle, 1)
+        assert KERNEL.WaitForSingleObject(handle, 5000) == 0
+    finally:
+        KERNEL.CloseHandle(handle)
+    wait_file(marker)
+    attach("host", launched["pid"])
+    assert client.tool("veh_detach").get("success")
+    release.write_text("exit", encoding="ascii")
+    assert KERNEL.WaitForSingleObject(target, 5000) == 0
+
+
+    # A retired launch ID must remain non-replayable after agent death, even
+    # when the original target survives and the work has left the registry.
+    marker, release = directory / "retired-launch.txt", directory / "retired-release.txt"
+    request = {"backend": "host", "operation": "launch", "target_scope": "host", "pid": 0,
+               "request_id": secrets.token_hex(32), "launch": {"program": sys.executable,
+               "args": ["-c", "from pathlib import Path;import time;Path(" + repr(str(marker)) +
+                        ").write_text('running');\nwhile not Path(" + repr(str(release)) + ").exists():time.sleep(.02)"],
+               "stopOnEntry": True}}
+    peer, work = raw_open(port, pin, token, request)
+    try:
+        payload = raw_threads(peer)
+        agent = int(payload[12:76].split(b"\0", 1)[0].decode().split(":")[1])
+        target = owned_handle(work["pid"], sys.executable, runner.pid, directory)
+        target_handles.append(target)
+        handle = owned_handle(agent, BIN / "guest_backend_fixture.exe", runner.pid, directory)
+        try:
+            assert KERNEL.TerminateProcess(handle, 1)
+            assert KERNEL.WaitForSingleObject(handle, 5000) == 0
+        finally:
+            KERNEL.CloseHandle(handle)
+    finally:
+        peer.close()
+    wait_file(marker)
+    threading.Event().wait(3)
+    peer = connect(port, pin)
+    try:
+        authenticate(peer, token)
+        control(peer, 4, json.dumps(request).encode())
+        denied = json.loads(read_control(peer, 5))
+        assert not denied.get("success") and denied.get("code") == "expired" and denied.get("outcome_unknown"), "retired launch replayed"
+    finally:
+        peer.close()
+    release.write_text("exit", encoding="ascii")
+    assert KERNEL.WaitForSingleObject(target, 5000) == 0
+
+
+def dll_lifecycle_checks(directory, target_handles, clients):
+    kernel = KERNEL
+    kernel.CreateFileW.argtypes = (wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                                   ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE)
+    kernel.CreateFileW.restype = wintypes.HANDLE
+    kernel.PeekNamedPipe.argtypes = (wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD,
+                                     ctypes.c_void_p, ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p)
+    kernel.ReadFile.argtypes = (wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD,
+                               ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p)
+    kernel.WriteFile.argtypes = kernel.ReadFile.argtypes
+    client = McpClient()
+    clients.append(client)
+    client.initialize()
+    result = client.tool("veh_launch", {"program": str(BIN / "test_target.exe"), "stopOnEntry": False})
+    assert result.get("success"), result
+    target = owned_handle(result["pid"], BIN / "test_target.exe", client.proc.pid, directory)
+    target_handles.append(target)
+    assert client.tool("veh_detach").get("success")
+    pipe = None
+    def read(size):
+        data = bytearray()
+        deadline = time.monotonic() + 5
+        while len(data) < size:
+            available = wintypes.DWORD()
+            assert kernel.PeekNamedPipe(pipe, None, 0, None, ctypes.byref(available), None), "response discarded before read"
+            if available.value:
+                count = min(size - len(data), available.value)
+                buffer = ctypes.create_string_buffer(count)
+                done = wintypes.DWORD()
+                assert kernel.ReadFile(pipe, buffer, count, ctypes.byref(done), None) and done.value
+                data.extend(buffer.raw[:done.value])
+            else:
+                assert time.monotonic() < deadline, "pipe response deadline"
+                threading.Event().wait(.01)
+        return bytes(data)
+    def open_pipe():
+        deadline = time.monotonic() + 5
+        while True:
+            handle = kernel.CreateFileW(r"\\.\pipe\dotnet-diagnostic-" + str(result["pid"]),
+                                       0xC0000000, 0, None, 3, 0, None)
+            if handle != ctypes.c_void_p(-1).value:
+                return handle
+            assert time.monotonic() < deadline, "DLL did not accept reconnect"
+            threading.Event().wait(.01)
+    def ready():
+        for _ in range(16):
+            command, size = struct.unpack("<II", read(8))
+            if size:
+                read(size)
+            if command == 0x1000:
+                return
+        raise AssertionError("DLL Ready missing")
+    def send(command):
+        packet = ctypes.create_string_buffer(struct.pack("<II", command, 0))
+        done = wintypes.DWORD()
+        assert kernel.WriteFile(pipe, packet, 8, ctypes.byref(done), None) and done.value == 8
+    def acknowledgement(expected):
+        for _ in range(16):
+            command, size = struct.unpack("<II", read(8))
+            payload = read(size) if size else b""
+            if command == expected:
+                assert payload == struct.pack("<I", 0)
+                return
+        raise AssertionError("DLL lifecycle acknowledgement missing")
+    try:
+        for command in (0xF0, 0xFF):
+            pipe = open_pipe()
+            ready()
+            send(command)
+            threading.Event().wait(.2)  # Deliberately read after the old disconnect point.
+            acknowledgement(command)
+            kernel.CloseHandle(pipe)
+            pipe = None
+    finally:
+        if pipe is not None:
+            kernel.CloseHandle(pipe)
 
 
 def run():
@@ -483,6 +668,35 @@ try{$pin=([BitConverter]::ToString($hash.ComputeHash($cert.RawData))).Replace('-
                 assert KERNEL.WaitForSingleObject(target, 5000) == 0, "detached owned target did not exit"
             passed("confirmed launch rejection clears state; lost reply retry retains the exact PID")
             passed("host stop-entry launch detach resumes owned primary thread")
+            # Separate resident resets the per-address connection budget for
+            # the lifecycle scenarios; every resident here is test-owned.
+            runner.terminate()
+            runner.wait(timeout=10)
+            runner_reader.join(timeout=2)
+            runner.stderr.close()
+            with socket.socket() as reservation:
+                reservation.bind(("127.0.0.1", 0))
+                port = reservation.getsockname()[1]
+            profile["listen"]["port"] = port
+            profile["backends"] = {
+                alias: {"path": backend, "target_scope": "guest", "args": ["--metadata", mode]}
+                for alias, mode in (("silent", "silent-detach"), ("late", "late-detach"))}
+            profile["backends"]["host"] = {"path": backend, "target_scope": "host", "args": ["--metadata", "host-cap"], "allow_launch": True}
+            runner_profile.write_text(json.dumps(profile), encoding="utf-8")
+            runner = subprocess.Popen([str(BIN / "veh-remote-runner.exe"), "--profile", str(runner_profile)],
+                                      stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, creationflags=CREATE_NO_WINDOW)
+            runner_lines = queue.Queue()
+            runner_reader = threading.Thread(target=read_runner, daemon=True)
+            runner_reader.start()
+            assert b"listening" in runner_lines.get(timeout=15)
+            mappings = {alias: {"target_scope": "host" if alias == "host" else "guest", "remote": {
+                "address": "127.0.0.1", "port": port, "certificate_sha256": pin, "token_file": str(token_path),
+                "backend": alias, "timeout_ms": 20000}} for alias in ("silent", "late", "host")}
+            table.write_text(json.dumps(mappings), encoding="utf-8")
+            lifecycle_checks(client, runner, directory, target_handles, port, pin, token)
+            passed("missing/late detach replies, rapid reconnect and dead-agent replacement")
+            dll_lifecycle_checks(directory, target_handles, clients)
+            passed("real VEH DLL preserves delayed-read Detach and Shutdown acknowledgements")
         finally:
             cleanup_failures = []
             for client in clients:

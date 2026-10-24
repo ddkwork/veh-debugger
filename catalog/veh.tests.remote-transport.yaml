@@ -1,5 +1,5 @@
 id: veh.tests.remote-transport
-revision: 1
+revision: 2
 summary: Verify localhost TLS authentication, resident work reconnect and remote MCP routing with synthetic backends
 use_when:
   - verifying changes to TCP transport, authentication or resident work ownership
@@ -18,6 +18,8 @@ execution:
     - {id: remote.runner, kind: file, ref: build/bin/Release/veh-remote-runner.exe, requirement: required}
     - {id: remote.fixture, kind: file, ref: build/bin/Release/guest_backend_fixture.exe, requirement: required}
     - {id: remote.mcp, kind: file, ref: build/bin/Release/veh-mcp-server.exe, requirement: required}
+    - {id: remote.target, kind: file, ref: build/bin/Release/test_target.exe, requirement: required}
+    - {id: remote.dll, kind: file, ref: build/bin/Release/vcruntime_net.dll, requirement: required}
 inputs: [test/test_remote_transport.py, test/mcp_test_client.py, src/remote/**, src/common/remote_channel.*, src/adapter/tcp_ipc_transport.*, build/bin/Release/**]
 checks: [veh.remote.localhost]
 docs: [docs/REMOTE_TRANSPORT.md, docs/DEVELOPMENT_TOOLS.md]

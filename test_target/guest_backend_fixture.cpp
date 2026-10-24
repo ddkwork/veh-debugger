@@ -78,6 +78,8 @@ int wmain(int argc, wchar_t** argv) {
         } else if (command == veh::IpcCommand::GetThreads) {
             struct { veh::GetThreadsResponse header; veh::ThreadInfo thread; } threads{};
             threads.header.status = veh::IpcStatus::Ok; threads.header.count = 1; threads.thread.id = 77;
+            if (mode == L"silent-detach" || mode == L"late-detach" || mode == L"host-cap")
+                sprintf_s(threads.thread.name, "fixture-agent:%lu", GetCurrentProcessId());
             if (mode == L"trace") strcpy_s(threads.thread.name,
                 continueRequests || pauseRequests ? "unexpected-resume-or-pause" : "untouched");
             if (!reply(pipe, header.command, threads)) break;
@@ -124,7 +126,11 @@ int wmain(int argc, wchar_t** argv) {
             if (!reply(pipe, header.command, veh::IpcStatus::Ok)) break;
         } else if (command == veh::IpcCommand::Heartbeat) {
             if (!send(pipe, static_cast<uint32_t>(veh::IpcEvent::HeartbeatAck), nullptr, 0)) break;
+        } else if (command == veh::IpcCommand::Shutdown && mode == L"silent-detach") {
+            Sleep(5000); break;
         } else if (command == veh::IpcCommand::Detach) {
+            if (mode == L"silent-detach") continue;
+            if (mode == L"late-detach") Sleep(4500);
             reply(pipe, header.command, veh::IpcStatus::Ok); break;
         } else if (!reply(pipe, header.command, veh::IpcStatus::Unsupported)) break;
     }
