@@ -647,6 +647,33 @@ void DapServer::OnDisconnect(const Request& req) {
 		SendResponse(resp);
 		return;
 	}
+	if (guestTarget_) {
+		Response resp;
+		resp.request_seq = req.seq;
+		resp.command = "disconnect";
+		std::vector<uint8_t> reply;
+		IpcStatus status{};
+		if (!GuestSupports(IpcCommand::Detach) ||
+			!ipcTransport_->SendAndReceive(IpcCommand::Detach, nullptr, 0, reply, 5000) ||
+			reply.size() != sizeof(status)) {
+			resp.success = false;
+			resp.message = "Guest backend detach reply is unavailable; session retained";
+			SendResponse(resp);
+			return;
+		}
+		std::memcpy(&status, reply.data(), sizeof(status));
+		if (status != IpcStatus::Ok) {
+			resp.success = false;
+			resp.message = "Guest backend detach failed; session retained";
+			SendResponse(resp);
+			return;
+		}
+		resp.success = true;
+		SendResponse(resp);
+		Cleanup(/*detachOnly=*/true, /*backendDetached=*/true);
+		Stop();
+		return;
+	}
 
 	// 응답을 Cleanup보다 먼저 전송한다.
 	// Cleanup()은 DLL에 Shutdown/Detach IPC를 보내고 파이프를 닫는데,
@@ -3767,14 +3794,14 @@ void DapServer::ResumeMainThread(uint32_t requestedThreadId) {
 	}
 }
 
-void DapServer::Cleanup(bool detachOnly) {
+void DapServer::Cleanup(bool detachOnly, bool backendDetached) {
 	// 모니터 스레드 먼저 정리 (double-close 방지)
 	StopProcessMonitor();
 
 	// 메인 스레드가 아직 suspended이면 resume (안 하면 프로세스가 좀비로 남음)
 	ResumeMainThread();
 
-	if (ipcTransport_->IsConnected()) {
+	if (ipcTransport_->IsConnected() && !backendDetached) {
 		// detachOnly=true: Detach 명령 → DLL 파이프 서버는 유지 (재연결 가능)
 		// detachOnly=false: Shutdown 명령 → DLL 파이프 서버도 종료
 		auto cmd = (guestTarget_ || detachOnly) ? IpcCommand::Detach : IpcCommand::Shutdown;

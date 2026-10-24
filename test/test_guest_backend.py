@@ -130,6 +130,19 @@ def run():
                 assert 'error' in modules, (mode, modules)
                 assert batch['failed'] == 1 and 'error' in batch['results'][0]['result'], (mode, batch)
         assert client.tool('veh_detach').get('success')
+        attached = client.tool('veh_attach', {**args, 'agent_args': ['--metadata', 'detach-three-errors']})
+        assert attached.get('success'), attached
+        first_detach = client.tool('veh_detach')
+        assert 'error' in first_detach and 'retained' in first_detach['error'].lower(), first_detach
+        assert client.tool('veh_threads')['count'] == 1, 'Failed detach dropped the guest session'
+        replacement = client.tool('veh_attach', {**args, 'agent_args': ['--metadata', 'wrong-pid']})
+        assert 'error' in replacement and 'detach' in replacement['error'].lower(), replacement
+        assert client.tool('veh_threads')['count'] == 1, 'Failed replacement dropped the guest session'
+        launch = client.tool('veh_launch', {'program': 'nonexistent-owned-fixture.exe'})
+        assert 'error' in launch and 'detach' in launch['error'].lower(), launch
+        assert client.tool('veh_threads')['count'] == 1, 'Failed launch dropped the guest session'
+        assert client.tool('veh_detach').get('success'), 'Fourth detach should release the session'
+        assert 'error' in client.tool('veh_threads'), 'Successful detach kept the guest session'
         for mode in ('wrong-pid', 'bad-width', 'wrong-scope', 'not-found', 'truncated', 'host-cap'):
             result = client.tool('veh_attach', {**args, 'agent_args': ['--metadata', mode]})
             assert 'error' in result, (mode, result)

@@ -416,7 +416,7 @@ void PipeClient::ReaderThread() {
 	// 종료 시 대기 중인 SendAndReceive 깨우기 (aborted 플래그로 실패 전달)
 	{
 		std::lock_guard<std::mutex> lock(responseMutex_);
-		if (waitingForResponse_) {
+		if (waitingForResponse_ && !responseReady_) {
 			if (responseFailure_ == PipeExchangeFailure::None) {
 				responseFailure_ = PipeExchangeFailure::ReaderAborted;
 				responseSystemError_ = GetLastError();

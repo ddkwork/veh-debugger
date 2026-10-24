@@ -374,7 +374,7 @@ DAP의 게스트 연결 설정은 추가하지 않습니다. 실행 중 서버�
 | `veh_processes` | - | 지원하는 게스트/VM 백엔드에서 OS 프로세스 목록(PID, 주소 폭, 짧은 이미지명)을 한 스냅샷으로 조회. 기본 프로필에선 `veh_toolbox`로 호출 |
 | `veh_attach` | `pid?, backend?/agent?, agent_args?, target_scope?` | VEH 주입 또는 외부 백엔드 연결. VM PID는 `target_scope="guest"`와 백엔드 검증 필요. VM 자체 연결은 pid를 생략합니다. |
 | `veh_launch` | `program, args?, stopOnEntry?, cwd?, env?, backend?/agent?, target_scope?` | 호스트 프로세스 생성·연결. `cwd`/`env` 지원. 게스트 launch/stopOnEntry는 미지원이며 기존 세션을 보존하고 거부 |
-| `veh_detach` | - | 디버거 분리 (타겟은 계속 실행) |
+| `veh_detach` | - | 디버거 분리 (타겟은 계속 실행). 백엔드 정리 실패 시 오류를 반환하고 세션을 유지해 재시도 가능 |
 | `veh_terminate` | `exitCode?` | 타겟을 **내부에서** 강제 종료 (주입된 DLL이 자기 프로세스에 `TerminateProcess` 호출). 외부 `taskkill`/`OpenProcess`를 막는 자기보호 타겟(deny-DACL/상위 무결성)도 확실히 종료 -- 프로세스 자기 핸들은 항상 종료 권한 보유. 종료 후 자동 detach. `WM_CLOSE->detach->taskkill` 수순 대체 |
 | `veh_set_breakpoint` | `address, condition?, hitCondition?, logMessage?, action?` | 소프트웨어 BP. `action`으로 히트 시 자동 실행 (veh_batch 형식) |
 | `veh_remove_breakpoint` | `id` | 소프트웨어 BP 제거 |

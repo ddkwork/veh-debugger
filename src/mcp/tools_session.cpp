@@ -165,7 +165,8 @@ json McpServer::ToolAttach(const json& args) {
     if(!vm&&!pid)return {{"error","pid is required for host/guest attachment"}};
 	if (session_.IsAttached() && !(agent && agent->remote)) {
 		LOG_INFO("Auto-detaching from previous session (pid=%u) before new attach", session_.GetTargetPid());
-		ToolDetach({});
+		const auto detached = ToolDetach({});
+		if (detached.contains("error")) return detached;
 	} else if (session_.GetPipeClient().IsConnected() && !(agent && agent->remote)) {
 		LOG_WARN("Stale pipe connection detected, cleaning up");
 		session_.GetPipeClient().StopHeartbeat();
@@ -224,7 +225,8 @@ json McpServer::ToolLaunch(const json& args) {
         return {{"error", "Guest process launch is not supported yet. Start the program in the guest and attach with target_scope=guest."}};
 	if (session_.IsAttached() && !(agent && agent->remote)) {
 		LOG_INFO("Auto-detaching from previous session (pid=%u) before new launch", session_.GetTargetPid());
-		ToolDetach({});
+		const auto detached = ToolDetach({});
+		if (detached.contains("error")) return detached;
 	} else if (session_.GetPipeClient().IsConnected() && !(agent && agent->remote)) {
 		LOG_WARN("Stale pipe connection detected, cleaning up");
 		session_.GetPipeClient().StopHeartbeat();

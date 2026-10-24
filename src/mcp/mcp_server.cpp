@@ -1091,7 +1091,7 @@ std::vector<McpServer::ToolDef> McpServer::BuildAllToolsList() {
 		 }}, {"required", json::array({"program"})}}}}),
 
 		Tool(&McpServer::ToolDetach, "session", 0, false,
-			{{"name", "veh_detach"}, {"description", "Detach debugger from the target process (leaves it running)."},
+			{{"name", "veh_detach"}, {"description", "Detach debugger from the target process. A failed backend cleanup returns an error and retains the session for retry."},
 		 {"inputSchema", {{"type", "object"}, {"properties", json::object()}}}}),
 
 		Tool(&McpServer::ToolTerminate, "session", kLite | kInteractive | kCapture, false,

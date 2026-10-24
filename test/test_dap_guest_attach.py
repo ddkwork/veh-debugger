@@ -57,6 +57,20 @@ def run():
     finally:
         client.close(terminate_debuggee=False)
 
+    client, response = attach("detach-three-errors")
+    try:
+        assert response["success"], response
+        for _ in range(3):
+            failed = client.request("disconnect", {"terminateDebuggee": False})
+            assert not failed["success"] and "retained" in failed["message"], failed
+            threads = client.request("threads")
+            assert threads["success"] and len(threads["body"]["threads"]) == 1, threads
+        assert client.request("disconnect", {"terminateDebuggee": False})["success"]
+        exit_code = client.proc.wait(timeout=3)
+        assert exit_code == 0, (exit_code, client.stderr_tail())
+    finally:
+        client.close(terminate_debuggee=False)
+
     for mode in ("wrong-pid", "bad-width", "wrong-scope", "truncated", "host-cap"):
         client, response = attach(mode)
         try:

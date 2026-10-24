@@ -485,20 +485,43 @@ DebugSession::LaunchResult DebugSession::Launch(const LaunchOptions& opts) {
 bool DebugSession::Detach() {
 	if (!attached_) return false;
 
-	attached_ = false;
-	ResumeMainThread();
-	StopProcessMonitor();
-
-    const bool wasConnected = ipcTransport_->IsConnected();
-    bool detachConfirmed = true;
-	ipcTransport_->StopHeartbeat();
-	ipcTransport_->StopEventListener();
-	try {
-        const bool sent = ipcTransport_->SendCommand(IpcCommand::Detach);
-        if (auto* remote = dynamic_cast<TcpIpcTransport*>(ipcTransport_.get())) {
-            detachConfirmed = !wasConnected || (sent && remote->WaitForWorkClose(5000));
-        }
-	} catch (...) { detachConfirmed = !ipcTransport_->IsRemote(); }
+	auto* remote = dynamic_cast<TcpIpcTransport*>(ipcTransport_.get());
+	const bool wasConnected = ipcTransport_->IsConnected();
+	bool detachConfirmed = true;
+	if (remote) {
+		// A remote work ends when the resident closes it, acknowledged or not.
+		attached_ = false;
+		ResumeMainThread();
+		StopProcessMonitor();
+		ipcTransport_->StopHeartbeat();
+		ipcTransport_->StopEventListener();
+		try {
+			const bool sent = ipcTransport_->SendCommand(IpcCommand::Detach);
+			detachConfirmed = !wasConnected || (sent && remote->WaitForWorkClose(5000));
+		} catch (...) { detachConfirmed = false; }
+	} else {
+		// A local backend's Ok comes first: a refused or lost Detach reply keeps
+		// the session (its guest effects may remain), so a retry stays possible
+		// and no attach/launch replaces it.
+		if (!backendInfo_.Supports(IpcCommand::Detach)) return false;
+		std::vector<uint8_t> reply;
+		if (!ipcTransport_->SendAndReceive(IpcCommand::Detach, nullptr, 0, reply, 5000) ||
+			reply.size() != sizeof(IpcStatus)) {
+			lastAttachError_ = "Backend detach failed or its reply is unavailable; session retained";
+			return false;
+		}
+		IpcStatus status{};
+		std::memcpy(&status, reply.data(), sizeof(status));
+		if (status != IpcStatus::Ok) {
+			lastAttachError_ = "Backend refused detach (status " + std::to_string(static_cast<uint32_t>(status)) + "); session retained";
+			return false;
+		}
+		ResumeMainThread();
+		attached_ = false;
+		StopProcessMonitor();
+		ipcTransport_->StopHeartbeat();
+		ipcTransport_->StopEventListener();
+	}
 	ipcTransport_->Disconnect();
 
 	{
@@ -518,7 +541,7 @@ bool DebugSession::Detach() {
 	guestTarget_ = false;vmTarget_ = false;
 	externalAttachPending_ = false;
 	targetAddressBits_ = 0;
-    if (!detachConfirmed) lastAttachError_ = "Remote detach completion was not confirmed; reconnect after the resident closes the old work";
+	if (!detachConfirmed) lastAttachError_ = "Remote detach completion was not confirmed; reconnect after the resident closes the old work";
 	return detachConfirmed;
 }
 

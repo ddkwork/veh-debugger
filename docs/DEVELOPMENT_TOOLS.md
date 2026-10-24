@@ -9,7 +9,7 @@ These bounded command-line helpers are the preferred way to reproduce and valida
 | `tools/run_tests.py` | Runs every `test/test_*.py` file in parallel (`--jobs`, longest first from `test/.test_durations.json`) with a per-file timeout, prints durations, flags exit-0 runs that report FAIL, skips `# requires: x64` files on an x86 build and `# slow` files with `--quick`, and cleans up exactly the processes each file started (parent chain + creation time, so reused pids are never adopted). |
 | `test/test_remote_transport.py` | Exercises resident TCP/TLS authentication, IPC routing, late/missing detach replies, dead-agent recovery, startup exit/Win32 and structured common error diagnostics (including invalid-record fallback), launch width/initial-thread metadata and retry recovery, and real DLL lifecycle reply draining; removes its owned certificate, secret and processes. See [remote transport](REMOTE_TRANSPORT.md). |
 | `test/mcp_test_client.py` | Shared timeout-aware MCP stdio client. It bounds captured diagnostics and terminates only processes it started. |
-| `test/dap_test_client.py`, `test/test_dap_thread_errors.py`, `test/test_dap_guest_attach.py` | Bounded DAP stdio client; no-attach error and synthetic external guest attach, scope/identity validation, read-only command routing and rejection tests. The adapter runs without opening a console window. `test/test_vm_attach.py` covers malformed guest thread-list IPC through MCP. |
+| `test/dap_test_client.py`, `test/test_dap_thread_errors.py`, `test/test_dap_guest_attach.py` | Bounded DAP stdio client; no-attach error and synthetic external guest attach, scope/identity validation, read-only command routing, rejection and acknowledged disconnect retry tests. The adapter runs without opening a console window. `test/test_vm_attach.py` covers malformed guest thread-list IPC through MCP. |
 | `tools/run_mcp_scenario.py` | Runs 1-500 calls from a JSON scenario, supports named result references, stops on errors by default, and optionally writes a new report without overwriting. |
 | `tools/validate_trace_output.py` | Validates exported trace JSON/JSONL ordering, thread ownership, counts, hashes, and optional `.vtc` code-version references. |
 | `tools/read_trace_event_stream.py` | Validates a portable `.vte` ordered-event artifact and converts its interleaved block/edge, memory, and register records to JSON Lines. |
@@ -210,7 +210,10 @@ failures, registered scope, bitness and unsupported pause/terminate handling.
   terminated), direct/batch module-list status, no-hit traces and batch error
   parity. It also
 checks immediate step refusals and zero-call hypervisor traces without automatic
-Continue/Pause, using the same synthetic fixture rather than a real VM.
+Continue/Pause, using the same synthetic fixture rather than a real VM. The
+fixture also returns three Detach errors before success to check that direct
+detach and attach/launch replacement keep the prior session until the backend
+acknowledges cleanup.
 Attach/launch replace sessions and remain excluded from batch and breakpoint
 actions; existing inspect commands retain their ordinary batch/action routes.
 

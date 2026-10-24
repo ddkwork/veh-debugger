@@ -50,7 +50,7 @@ int wmain(int argc, wchar_t** argv) {
     }
     if (mode == L"early-exit") return 37;
     const bool machineMode=mode.rfind(L"machine",0)==0;
-    const bool vmMode=mode.rfind(L"vm",0)==0||machineMode;uint32_t vmState=2;
+    const bool vmMode=mode.rfind(L"vm",0)==0||machineMode;uint32_t vmState=2,detachFailures=0;
     uint32_t continueRequests = 0, pauseRequests = 0;
     uint32_t fixtureBreakpointId = 0;
     if ((!pid&&!machineMode)||name.empty()||(machineMode&&pidProvided)) return 2;
@@ -240,6 +240,10 @@ int wmain(int argc, wchar_t** argv) {
         } else if (command == veh::IpcCommand::Detach) {
             if (mode == L"silent-detach") continue;
             if (mode == L"late-detach") Sleep(4500);
+            if(mode==L"detach-three-errors"&&detachFailures++<3) {
+                if(!reply(pipe,header.command,veh::IpcStatus::Error))break;
+                continue;
+            }
             reply(pipe, header.command, veh::IpcStatus::Ok); break;
         } else if (!reply(pipe, header.command, veh::IpcStatus::Unsupported)) break;
     }

@@ -84,7 +84,7 @@ private:
 	// Helpers
 	std::string GetDllPath();
 	void ResumeMainThread(uint32_t requestedThreadId = 0);
-	void Cleanup(bool detachOnly = false);
+	void Cleanup(bool detachOnly = false, bool backendDetached = false);
 	bool AttachGuestAgent(const Request& req, std::string& error);
 	bool GuestSupports(IpcCommand command) const;
 
