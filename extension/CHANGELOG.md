@@ -3,7 +3,7 @@
 ## Unreleased
 
 ### Added
-- **External guest attachment (DAP, read-only subset)** -- `attach` accepts `targetScope="guest"`, an absolute `agent` path and optional `agentArgs`; it launches the agent with `--pid`/`--pipe`, validates the pipe server and backend target metadata, then serves supported `threads`, `readMemory`, and `disassemble` requests. Host PID APIs are excluded from this route; guest stop, breakpoint, step, launch and terminate commands fail explicitly pending their DAP semantics. Synthetic fixture checks success, mismatched metadata and malformed responses; a live guest DAP test is still pending.
+- **External guest attachment (DAP, read-only subset)** -- `attach` accepts `targetScope="guest"`, an absolute `agent` path and optional `agentArgs`; it launches the agent with `--pid`/`--pipe`, validates the pipe server and backend target metadata, then serves supported `threads`, `readMemory`, and `disassemble` requests. Host PID APIs are excluded from this route; guest stop, breakpoint, step, launch and terminate commands fail explicitly pending their DAP semantics. Synthetic fixture checks success, mismatched metadata and malformed responses. Paused Windows guest runs also confirmed x64 and WoW64 attach, complete thread lists and clean detach; live DAP memory, control and performance checks remain pending.
 - **Guest process discovery (MCP)** -- `veh_processes` asks a capable guest or VM backend for one complete OS process snapshot, returning PIDs, address widths and escaped short image names. It can be called through `veh_toolbox` or `veh_batch`; unsupported backends and malformed responses fail explicitly. Use a returned PID with `veh_attach(target_scope="guest")`; guest launch/stopOnEntry is still pending.
 
 ### Fixed
