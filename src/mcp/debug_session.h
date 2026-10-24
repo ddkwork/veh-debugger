@@ -99,6 +99,8 @@ struct LocalVarEntry {
 };
 
 struct TraceResult {
+	bool received = false; // the backend answered
+	bool ok = false;       // ... with Ok (no calls in the window is still a result)
 	uint32_t totalHits = 0;
 	uint32_t uniqueCallers = 0;
 	struct Caller { uint64_t address; uint32_t hitCount; };

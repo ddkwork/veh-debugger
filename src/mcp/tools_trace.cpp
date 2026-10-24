@@ -40,8 +40,11 @@ json McpServer::ToolTraceCallers(const json& args) {
 
 	const uint32_t durationMs = DurationMs(args);
 	auto result = session_.TraceCallers(addr, durationMs);
-	if (result.totalHits == 0 && result.callers.empty()) {
+	if (!result.received) {
 		return {{"error", IpcErrorMessage()}};
+	}
+	if (!result.ok) {
+		return {{"error", "the backend could not trace this address (no hook could be placed there)"}};
 	}
 
 	json callers = json::array();

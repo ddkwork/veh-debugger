@@ -1385,9 +1385,10 @@ EvalResult DebugSession::Evaluate(const std::string& expression, uint32_t thread
 TraceResult DebugSession::TraceCallers(uint64_t address, uint32_t durationMs) {
 	TraceResult result;
 
-	// Auto-resume. A backend that never stops threads (hypervisor) has nothing
-	// to resume or pause.
-	const bool stops = backendInfo_.Supports(IpcCommand::Continue);
+	// Auto-resume, and pause again after. Only the DLL's INT3 trace needs the
+	// target running: the hypervisor's hook sees calls whatever the target's
+	// state, and its Pause would leave a running target suspended afterwards.
+	const bool stops = backendInfo_.backend != IpcBackend::Hypervisor && backendInfo_.Supports(IpcCommand::Continue);
 	ResumeMainThread();
 	if (stops) {
 		ContinueRequest contReq = {};
@@ -1408,6 +1409,7 @@ TraceResult DebugSession::TraceCallers(uint64_t address, uint32_t durationMs) {
 		ipcTransport_->SendCommand(IpcCommand::Pause, &pauseReq, sizeof(pauseReq));
 	}
 	if (!received) return result;
+	result.received = true;
 
 	// Drain stale stop events
 	{
@@ -1419,6 +1421,7 @@ TraceResult DebugSession::TraceCallers(uint64_t address, uint32_t durationMs) {
 	const auto* hdr = reinterpret_cast<const TraceCallersResponse*>(respData.data());
 	if (hdr->status != IpcStatus::Ok) return result;
 
+	result.ok = true;
 	result.totalHits = hdr->totalHits;
 	result.uniqueCallers = hdr->uniqueCallers;
 
