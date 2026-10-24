@@ -735,43 +735,31 @@ ContinueResult DebugSession::ContinueWithDetails(uint32_t threadId, bool passExc
 	return result;
 }
 
-bool DebugSession::StepIn(uint32_t threadId) {
+IpcStatus DebugSession::StepIn(uint32_t threadId) {
 	StepRequest req{};
 	req.threadId = threadId;
 	std::vector<uint8_t> respData;
 	if (!ipcTransport_->SendAndReceive(IpcCommand::StepInto, &req, sizeof(req), respData))
-		return false;
-	if (respData.size() >= sizeof(IpcStatus)) {
-		auto status = *reinterpret_cast<const IpcStatus*>(respData.data());
-		if (status == IpcStatus::NotFound) return false;
-	}
-	return true;
+		return IpcStatus::Error;
+	return respData.size() >= sizeof(IpcStatus) ? *reinterpret_cast<const IpcStatus*>(respData.data()) : IpcStatus::Ok;
 }
 
-bool DebugSession::StepOver(uint32_t threadId) {
+IpcStatus DebugSession::StepOver(uint32_t threadId) {
 	StepRequest req{};
 	req.threadId = threadId;
 	std::vector<uint8_t> respData;
 	if (!ipcTransport_->SendAndReceive(IpcCommand::StepOver, &req, sizeof(req), respData))
-		return false;
-	if (respData.size() >= sizeof(IpcStatus)) {
-		auto status = *reinterpret_cast<const IpcStatus*>(respData.data());
-		if (status == IpcStatus::NotFound) return false;
-	}
-	return true;
+		return IpcStatus::Error;
+	return respData.size() >= sizeof(IpcStatus) ? *reinterpret_cast<const IpcStatus*>(respData.data()) : IpcStatus::Ok;
 }
 
-bool DebugSession::StepOut(uint32_t threadId) {
+IpcStatus DebugSession::StepOut(uint32_t threadId) {
 	StepRequest req{};
 	req.threadId = threadId;
 	std::vector<uint8_t> respData;
 	if (!ipcTransport_->SendAndReceive(IpcCommand::StepOut, &req, sizeof(req), respData))
-		return false;
-	if (respData.size() >= sizeof(IpcStatus)) {
-		auto status = *reinterpret_cast<const IpcStatus*>(respData.data());
-		if (status == IpcStatus::NotFound) return false;
-	}
-	return true;
+		return IpcStatus::Error;
+	return respData.size() >= sizeof(IpcStatus) ? *reinterpret_cast<const IpcStatus*>(respData.data()) : IpcStatus::Ok;
 }
 
 bool DebugSession::Pause(uint32_t threadId) {

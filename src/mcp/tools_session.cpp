@@ -422,6 +422,17 @@ json McpServer::ToolContinue(const json& args) {
 	return ret;
 }
 
+// Why a backend refused to start a step (no StepCompleted event follows).
+static std::string StepRefusedMessage(uint32_t threadId, IpcStatus status) {
+	const std::string thread = "Thread " + std::to_string(threadId);
+	switch (status) {
+	case IpcStatus::NotFound: return thread + " is not stopped (not found or already running)";
+	case IpcStatus::Unsupported:
+		return thread + " is suspended (pause/freeze) without a stop the backend can step from; continue to a breakpoint first";
+	default: return thread + ": step refused (status " + std::to_string(static_cast<int>(status)) + ")";
+	}
+}
+
 json McpServer::ToolStepIn(const json& args) {
 	if (!session_.IsAttached()) return {{"error", NotAttachedMessage()}};
 	session_.ResumeMainThread();
@@ -435,9 +446,8 @@ json McpServer::ToolStepIn(const json& args) {
 		stepCompletedThread_ = 0;
 	}
 
-	if (!session_.StepIn(threadId)) {
-		return {{"error", "Thread " + std::to_string(threadId) + " is not stopped (not found or already running)"}};
-	}
+	if (const IpcStatus st = session_.StepIn(threadId); st != IpcStatus::Ok)
+		return {{"error", StepRefusedMessage(threadId, st)}};
 
 	std::unique_lock<std::mutex> lock(stepMutex_);
 	if (!stepCv_.wait_for(lock, std::chrono::seconds(5), [this, threadId]{
@@ -485,9 +495,8 @@ json McpServer::ToolStepOver(const json& args) {
 		stepCompletedThread_ = 0;
 	}
 
-	if (!session_.StepOver(threadId)) {
-		return {{"error", "Thread " + std::to_string(threadId) + " is not stopped (not found or already running)"}};
-	}
+	if (const IpcStatus st = session_.StepOver(threadId); st != IpcStatus::Ok)
+		return {{"error", StepRefusedMessage(threadId, st)}};
 
 	// Wait for StepCompleted event (up to 5s)
 	{
@@ -511,9 +520,8 @@ json McpServer::ToolStepOut(const json& args) {
 	uint32_t threadId = JsonUint32(args, "threadId");
 	if (threadId == 0) return {{"error", "threadId is required"}};
 
-	if (!session_.StepOut(threadId)) {
-		return {{"error", "Thread " + std::to_string(threadId) + " is not stopped (not found or already running)"}};
-	}
+	if (const IpcStatus st = session_.StepOut(threadId); st != IpcStatus::Ok)
+		return {{"error", StepRefusedMessage(threadId, st)}};
 	return {{"success", true}, {"threadId", threadId}};
 }
 

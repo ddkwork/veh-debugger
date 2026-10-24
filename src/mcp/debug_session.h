@@ -220,9 +220,9 @@ public:
 	// --- Execution control ---
 	bool Continue(uint32_t threadId = 0, bool passException = false);
 	ContinueResult ContinueWithDetails(uint32_t threadId = 0, bool passException = false);
-	bool StepIn(uint32_t threadId);
-	bool StepOver(uint32_t threadId);
-	bool StepOut(uint32_t threadId);
+	IpcStatus StepIn(uint32_t threadId); // Ok: the step completes with a StepCompleted event
+	IpcStatus StepOver(uint32_t threadId);
+	IpcStatus StepOut(uint32_t threadId);
 	bool Pause(uint32_t threadId = 0);
 	uint32_t ResumeMainThread(uint32_t requestedThreadId = 0);
 
