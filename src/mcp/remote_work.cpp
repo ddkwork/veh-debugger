@@ -13,9 +13,10 @@ bool DebugSession::ConnectRemoteWork(uint32_t pid, const ExternalAgent& agent, c
     }
     nlohmann::json request{{"backend", agent.remote->backend}, {"operation", launch ? "launch" : "attach"},
         {"target_scope", scope}, {"pid", pid}};
+    const bool retryingUncertainLaunch = launch && !pendingRemoteRequestId_.empty();
     if (launch) {
         if (launch->program.empty()) { lastAttachError_ = "program is required"; return false; }
-                request["launch"] = {{"program", launch->program}, {"args", launch->args}, {"env", launch->env},
+        request["launch"] = {{"program", launch->program}, {"args", launch->args}, {"env", launch->env},
             {"cwd", launch->cwd}, {"stopOnEntry", launch->stopOnEntry}, {"runAsInvoker", launch->runAsInvoker}};
         const auto identity = agent.remote->address + ":" + std::to_string(agent.remote->port) + ":" +
             agent.remote->certificateSha256 + ":" + request.dump();
@@ -31,12 +32,19 @@ bool DebugSession::ConnectRemoteWork(uint32_t pid, const ExternalAgent& agent, c
         request["request_id"] = pendingRemoteRequestId_;
     }
     auto transport = std::make_unique<TcpIpcTransport>(*agent.remote, request.dump());
-    if (!transport->Connect(pid, agent.remote->timeoutMs)) { lastAttachError_ = transport->Error(); return false; }
+    if (!transport->Connect(pid, agent.remote->timeoutMs)) {
+        const auto outcome = transport->OpenOutcome();
+        if (launch && (outcome == RemoteOpenOutcome::Rejected ||
+            (outcome == RemoteOpenOutcome::NotSent && !retryingUncertainLaunch))) {
+            pendingRemoteRequestId_.clear(); pendingRemoteLaunch_.clear(); pendingRemoteLaunchAt_ = 0;
+        }
+        lastAttachError_ = transport->Error(); return false;
+    }
     const auto work = transport->Work();
-    if (launch) { pendingRemoteRequestId_.clear(); pendingRemoteLaunch_.clear(); }
     if (work.scope != scope || (!launch && work.pid != pid)) {
         transport->Disconnect(); lastAttachError_ = "Remote target identity does not match the requested scope"; return false;
     }
+    if (launch) { pendingRemoteRequestId_.clear(); pendingRemoteLaunch_.clear(); pendingRemoteLaunchAt_ = 0; }
     // Stage work before replacing the current session; no local PID operations.
     if (attached_) Detach();
     else { StopProcessMonitor(); ipcTransport_->Disconnect(); }

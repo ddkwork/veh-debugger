@@ -87,7 +87,8 @@ public:
         for (auto& owner : owners) owner->Stop();
         reaper_.join();
     }
-    std::shared_ptr<WorkOwner> Open(const Json& request, const std::shared_ptr<Channel>& peer, std::string& code) {
+    std::shared_ptr<WorkOwner> Open(const Json& request, const std::shared_ptr<Channel>& peer, std::string& code, bool& outcomeUnknown) {
+        outcomeUnknown = false;
         code = "invalid";
         const auto name = request.at("backend").get<std::string>();
         const auto scope = request.at("target_scope").get<std::string>();
@@ -105,14 +106,14 @@ public:
         }
         // Serialize creation without blocking other clients behind backend startup.
         std::unique_lock<std::mutex> creation(createMutex_, std::try_to_lock);
-        if (!creation.owns_lock()) { code = "busy"; return {}; }
+        if (!creation.owns_lock()) { code = "busy"; outcomeUnknown = true; return {}; }
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if (stopping_) { code = "unavailable"; return {}; }
             for (const auto& owner : owners_) {
                 if ((operation == "launch" && owner->MatchesRequest(name, requestId)) ||
                     (operation == "attach" && owner->Matches(name, scope, pid))) {
-                    if (!owner->Reserve(peer)) { code = owner->Closing() ? "expired" : "busy"; return {}; }
+                    if (!owner->Reserve(peer)) { code = owner->Closing() ? "expired" : "busy"; outcomeUnknown = true; return {}; }
                     return owner;
                 }
             }
@@ -173,9 +174,9 @@ void Serve(const std::shared_ptr<Channel>& channel, uintptr_t socket, const Conf
         if (!ReadControl(*channel, Control::OpenWork, bytes, remaining())) { channel->Cancel(); return; }
         auto request = Json::parse(bytes, nullptr, true, false);
         if (!request.is_object()) throw std::invalid_argument("request");
-        std::string code;
-        owner = registry.Open(request, channel, code);
-        Json reply = owner ? owner->Describe() : Json{{"success", false}, {"code", code}};
+        std::string code; bool outcomeUnknown = true;
+        owner = registry.Open(request, channel, code, outcomeUnknown);
+        Json reply = owner ? owner->Describe() : Json{{"success", false}, {"code", code}, {"outcome_unknown", outcomeUnknown}};
         auto text = reply.dump();
         if (!WriteControl(*channel, Control::Work, text.data(), static_cast<uint32_t>(text.size()), 5000) || !owner) {
             if (owner) owner->Unbind(channel);
@@ -187,7 +188,13 @@ void Serve(const std::shared_ptr<Channel>& channel, uintptr_t socket, const Conf
         }
         for (;;) {
             IpcHeader header{};
-            if (!channel->Read(&header, sizeof(header), 15000)) break;
+            if (!channel->Read(&header, sizeof(header), 15000)) {
+                // Synchronous commands suppress frontend heartbeats. An empty
+                // input timeout is not disconnection while bounded work owns it.
+                // Partial frames and socket errors still terminate the connection.
+                if (GetLastError() == WAIT_TIMEOUT && owner->HasPendingWork(channel)) continue;
+                break;
+            }
             if (header.command >= 0x1000 || header.payloadSize > 64 * 1024 * 1024) break;
             std::vector<uint8_t> payload(header.payloadSize);
             if (header.payloadSize && !channel->Read(payload.data(), payload.size(), 15000)) break;

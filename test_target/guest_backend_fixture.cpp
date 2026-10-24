@@ -61,6 +61,7 @@ int wmain(int argc, wchar_t** argv) {
                 for (auto op : {veh::IpcCommand::Continue, veh::IpcCommand::Pause, veh::IpcCommand::TraceCallers})
                     veh::SetCommandSupported(caps.commands, op);
             }
+            if (mode == L"delayed-trace") veh::SetCommandSupported(caps.commands, veh::IpcCommand::TraceCallers);
             strcpy_s(caps.name, "synthetic-guest");
             if (!reply(pipe, header.command, caps)) break;
         } else if (command == veh::IpcCommand::GetTargetInfo) {
@@ -113,8 +114,9 @@ int wmain(int argc, wchar_t** argv) {
                 memcpy(data.data()+sizeof(response)+static_cast<size_t>(i)*sizeof(record),&record,sizeof(record));
             }
             if(!send(pipe,header.command,data.data(),mode==L"vm-truncated"?8:static_cast<uint32_t>(data.size())))break;
-        } else if (mode == L"trace" && command == veh::IpcCommand::TraceCallers && bytes.size() == sizeof(veh::TraceCallersRequest)) {
+        } else if ((mode == L"trace" || mode == L"delayed-trace") && command == veh::IpcCommand::TraceCallers && bytes.size() == sizeof(veh::TraceCallersRequest)) {
             veh::TraceCallersRequest request{}; memcpy(&request, bytes.data(), sizeof(request));
+            if (mode == L"delayed-trace") Sleep(request.durationMs > 20000 ? 20000 : request.durationMs);
             const veh::TraceCallersResponse response{request.address == 0x2000 ? veh::IpcStatus::Unsupported : veh::IpcStatus::Ok, 0, 0};
             if (!reply(pipe, header.command, response)) break;
         } else if (mode == L"trace" && (command == veh::IpcCommand::Continue || command == veh::IpcCommand::Pause)) {

@@ -31,6 +31,7 @@ KERNEL.OpenProcess.restype = wintypes.HANDLE
 KERNEL.WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
 KERNEL.TerminateProcess.argtypes = (wintypes.HANDLE, wintypes.UINT)
 KERNEL.CloseHandle.argtypes = (wintypes.HANDLE,)
+KERNEL.QueryFullProcessImageNameW.argtypes = (wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD))
 
 
 def powershell(script, directory):
@@ -125,6 +126,99 @@ def raw_threads(peer):
     raise AssertionError("thread reply missing")
 
 
+class DropWorkReplyProxy:
+    """Forward TLS unchanged, dropping only the first OpenWork reply."""
+    def __init__(self, upstream):
+        self.upstream = upstream
+        self.listener = socket.socket()
+        self.listener.bind(("127.0.0.1", 0))
+        self.listener.listen(3)
+        self.listener.settimeout(0.2)
+        self.port = self.listener.getsockname()[1]
+        self.stop = threading.Event()
+        self.dropped = threading.Event()
+        self.rejected_retry_handshake = threading.Event()
+        self.sockets = []
+        self.lock = threading.Lock()
+        self.thread = threading.Thread(target=self._serve)
+
+    def __enter__(self):
+        self.thread.start()
+        return self
+
+    def _track(self, connection):
+        with self.lock:
+            self.sockets.append(connection)
+
+    def _close(self, connection):
+        try:
+            connection.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        connection.close()
+
+    def _serve(self):
+        while not self.stop.is_set():
+            try:
+                client, _ = self.listener.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            backend = None
+            sender = None
+            try:
+                self._track(client)
+                if self.dropped.is_set() and not self.rejected_retry_handshake.is_set():
+                    self.rejected_retry_handshake.set()
+                    continue  # Failed retry before OpenWork must preserve earlier uncertainty.
+                backend = socket.create_connection(("127.0.0.1", self.upstream), timeout=10)
+                self._track(backend)
+                def forward_requests():
+                    try:
+                        while not self.stop.is_set():
+                            data = client.recv(65536)
+                            if not data:
+                                break
+                            backend.sendall(data)
+                    except OSError:
+                        pass
+                    finally:
+                        self._close(backend)
+                sender = threading.Thread(target=forward_requests)
+                sender.start()
+                application_records = 0
+                while not self.stop.is_set():
+                    header = exact(backend, 5)
+                    payload = exact(backend, int.from_bytes(header[3:5], "big"))
+                    if header[0] == 23:
+                        application_records += 1
+                    # TLS1.2 application records: challenge header, nonce, auth
+                    # completion, then Work header. No plaintext or token is read.
+                    if not self.dropped.is_set() and application_records == 4:
+                        self.dropped.set()
+                        break
+                    client.sendall(header + payload)
+            except (OSError, EOFError, TimeoutError):
+                pass
+            finally:
+                self._close(client)
+                if backend:
+                    self._close(backend)
+                if sender:
+                    sender.join(timeout=5)
+                    assert not sender.is_alive(), "proxy request worker remains"
+
+    def __exit__(self, *_):
+        self.stop.set()
+        self.listener.close()
+        with self.lock:
+            for connection in self.sockets:
+                self._close(connection)
+        self.thread.join(timeout=5)
+        assert not self.thread.is_alive(), "proxy server remains"
+
+
 def wait_file(path, seconds=5):
     deadline = time.monotonic() + seconds
     while not path.exists():
@@ -185,7 +279,7 @@ try{$pin=([BitConverter]::ToString($hash.ComputeHash($cert.RawData))).Replace('-
                 "listen": {"address": "127.0.0.1", "port": port},
                 "certificate_sha256": pin, "token_file": str(token_path),
                 "backends": {
-                    "guest": {"path": backend, "target_scope": "guest"},
+                    "guest": {"path": backend, "target_scope": "guest", "args": ["--metadata", "delayed-trace"]},
                     "machine": {"path": backend, "target_scope": "vm", "args": ["--metadata", "machine"]},
                     "host": {"path": backend, "target_scope": "host", "args": ["--metadata", "host-cap"], "allow_launch": True},
                 }}
@@ -287,6 +381,11 @@ try{$pin=([BitConverter]::ToString($hash.ComputeHash($cert.RawData))).Replace('-
             assert attached.get("success") and attached["addressBits"] == 32, "guest attach"
             assert attached["backend"]["targetScope"] == "guest", "guest scope"
             assert client.tool("veh_threads")["threads"][0]["id"] == 77, "guest threads"
+            started = time.monotonic()
+            trace = client.tool("veh_trace_callers", {"address": "0x1000", "duration_ms": 20000}, timeout=30)
+            assert trace.get("totalHits") == 0 and time.monotonic() - started >= 19, "long command disconnected early"
+            assert client.tool("veh_threads")["count"] == 1, "long command lost connection"
+            passed("20-second command survives idle read deadline without extra authentication")
             for tool_name, arguments, fragment in (
                 ("veh_set_breakpoint", {"address": "0x1000", "condition": "RAX == 1"}, "Conditional breakpoint"),
                 ("veh_trace_basic_blocks", {"threadId": 77, "code_output": "file"}, "Target-side file"),
@@ -339,16 +438,50 @@ try{$pin=([BitConverter]::ToString($hash.ComputeHash($cert.RawData))).Replace('-
 
             marker = directory / "launched.txt"
             code = "from pathlib import Path;Path(" + repr(str(marker)) + ").write_text('done')"
-            launched = client.tool("veh_launch", {
-                "backend": "host", "program": sys.executable, "args": ["-c", code], "stopOnEntry": True}, timeout=25)
-            assert launched.get("success"), "host launch"
-            target = KERNEL.OpenProcess(0x00100000 | 0x0001, False, launched["pid"])
-            assert target, "owned launched process handle"
-            target_handles.append(target)
-            assert not marker.exists(), "stopOnEntry allowed entry execution"
-            assert client.tool("veh_detach").get("success"), "host detach"
-            wait_file(marker)
-            assert KERNEL.WaitForSingleObject(target, 5000) == 0, "detached owned target did not exit"
+            failed = client.tool("veh_launch", {"backend": "host", "program": str(directory / "missing-program.exe")}, timeout=25)
+            assert "could not be opened" in failed.get("error", ""), "missing program did not return confirmed rejection"
+            # A corrected program must work after a confirmed missing-file
+            # rejection. Also lose its first Work reply to exercise genuine
+            # uncertainty: a different launch must be refused, and identical
+            # retry must recover the exact first PID instead of spawning twice.
+            launch_arguments = {
+                "backend": "host", "program": sys.executable, "args": ["-c", code], "stopOnEntry": True}
+            with DropWorkReplyProxy(port) as proxy:
+                mappings["host"]["remote"]["port"] = proxy.port
+                table.write_text(json.dumps(mappings), encoding="utf-8")
+                lost = client.tool("veh_launch", launch_arguments, timeout=25)
+                assert proxy.dropped.is_set() and "result unknown" in lost.get("error", ""), "lost Work reply not uncertain"
+                program_info = directory / "launch.json"
+                program_info.write_text(json.dumps({"program": sys.executable}), encoding="utf-8")
+                first_pid = int(powershell(
+                    "$ErrorActionPreference='Stop'; $p=(Get-Content -Raw -LiteralPath (Join-Path $env:VEH_TEST_TEMP 'launch.json')|ConvertFrom-Json).program; "
+                    f"Get-CimInstance Win32_Process -Filter \"ParentProcessId={runner.pid}\" | Where-Object {{$_.Name -eq [IO.Path]::GetFileName($p)}} | Select-Object -ExpandProperty ProcessId",
+                    directory))
+                target = KERNEL.OpenProcess(0x00100000 | 0x1000 | 0x0001, False, first_pid)
+                assert target, "owned uncertain launch handle"
+                target_handles.append(target)
+                image = ctypes.create_unicode_buffer(32768)
+                image_size = wintypes.DWORD(len(image))
+                assert KERNEL.QueryFullProcessImageNameW(target, 0, image, ctypes.byref(image_size)), "owned target identity query"
+                assert Path(image.value).resolve() == Path(sys.executable).resolve(), "owned target path mismatch"
+                refused = client.tool("veh_launch", {**launch_arguments, "program": str(directory / "other-program.exe")})
+                assert "Previous remote launch may exist" in refused.get("error", ""), "uncertain launch lost protection"
+                retry_failed = client.tool("veh_launch", launch_arguments, timeout=25)
+                assert proxy.rejected_retry_handshake.is_set() and "authentication failed" in retry_failed.get("error", ""), "retry handshake did not fail"
+                refused_again = client.tool("veh_launch", {**launch_arguments, "program": str(directory / "other-program.exe")})
+                assert "Previous remote launch may exist" in refused_again.get("error", ""), "failed retry erased earlier uncertainty"
+                for _ in range(3):
+                    launched = client.tool("veh_launch", launch_arguments, timeout=25)
+                    if launched.get("success"):
+                        break
+                    assert "active connection" in launched.get("error", ""), launched
+                    threading.Event().wait(0.05)
+                assert launched.get("success") and launched["pid"] == first_pid, "uncertain retry created another target"
+                assert not marker.exists(), "stopOnEntry allowed entry execution"
+                assert client.tool("veh_detach").get("success"), "host detach"
+                wait_file(marker)
+                assert KERNEL.WaitForSingleObject(target, 5000) == 0, "detached owned target did not exit"
+            passed("confirmed launch rejection clears state; lost reply retry retains the exact PID")
             passed("host stop-entry launch detach resumes owned primary thread")
         finally:
             cleanup_failures = []

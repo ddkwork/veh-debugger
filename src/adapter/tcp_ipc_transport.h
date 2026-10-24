@@ -19,6 +19,7 @@ struct RemoteWorkInfo {
     uint32_t addressBits = 0;
     bool outcomeUnknown = false;
 };
+enum class RemoteOpenOutcome { NotSent, Rejected, Unknown, Opened };
 // Reuses the existing single-reader IPC/event/heartbeat engine.
 class TcpIpcTransport final : public PipeClient {
 public:
@@ -30,6 +31,7 @@ public:
     uint32_t PeerProcessId() const override { return 0; }
     const RemoteWorkInfo& Work() const { return work_; }
     const std::string& Error() const { return error_; }
+    RemoteOpenOutcome OpenOutcome() const { return openOutcome_; }
 protected:
     bool AsyncReadExact(void* data, DWORD size, DWORD timeoutMs) override;
     bool AsyncWriteExact(const void* data, DWORD size, DWORD timeoutMs) override;
@@ -39,5 +41,6 @@ private:
     std::string openRequest_, error_;
     remote::Channel channel_;
     RemoteWorkInfo work_;
+    RemoteOpenOutcome openOutcome_ = RemoteOpenOutcome::NotSent;
 };
 } // namespace veh

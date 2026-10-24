@@ -9,6 +9,7 @@ TcpIpcTransport::TcpIpcTransport(RemoteEndpoint endpoint, std::string openReques
 
 bool TcpIpcTransport::Connect(uint32_t, int timeoutMs) {
     error_ = "Remote connection or authentication failed";
+    openOutcome_ = RemoteOpenOutcome::NotSent;
     const int budget = std::clamp(std::min(timeoutMs, endpoint_.timeoutMs), 100, 30000);
     const auto deadline = GetTickCount64() + static_cast<ULONGLONG>(budget);
     auto remaining = [&]() -> int {
@@ -17,8 +18,13 @@ bool TcpIpcTransport::Connect(uint32_t, int timeoutMs) {
     };
     if (openRequest_.size() > 65536 || !channel_.Connect(endpoint_.address, endpoint_.port,
         endpoint_.certificateSha256, remaining()) ||
-        !remote::AuthenticateClient(channel_, endpoint_.tokenFile, remaining()) ||
-        !remote::WriteControl(channel_, remote::Control::OpenWork, openRequest_.data(),
+        !remote::AuthenticateClient(channel_, endpoint_.tokenFile, remaining())) {
+        channel_.Close(); return false;
+    }
+    // A failed write can still have delivered the complete OpenWork request.
+    openOutcome_ = RemoteOpenOutcome::Unknown;
+    error_ = "Remote work open result unknown; check resident work before repeating launch";
+    if (!remote::WriteControl(channel_, remote::Control::OpenWork, openRequest_.data(),
             static_cast<uint32_t>(openRequest_.size()), remaining())) {
         channel_.Close(); return false;
     }
@@ -29,9 +35,16 @@ bool TcpIpcTransport::Connect(uint32_t, int timeoutMs) {
     }
     try {
         auto reply = nlohmann::json::parse(bytes);
-        if (!reply.value("success", false)) {
+        if (!reply.at("success").is_boolean()) throw std::invalid_argument("metadata");
+        if (!reply.at("success").get<bool>()) {
+            // Validate the complete rejection before clearing duplicate-launch protection.
+            const auto code = reply.at("code").get<std::string>();
+            if (code != "unsupported" && code != "busy" && code != "expired" &&
+                code != "invalid" && code != "unavailable") throw std::invalid_argument("metadata");
+            // Older/ambiguous replies must not clear duplicate-launch protection.
+            if (reply.contains("outcome_unknown") && reply.at("outcome_unknown").is_boolean() &&
+                !reply.at("outcome_unknown").get<bool>()) openOutcome_ = RemoteOpenOutcome::Rejected;
             // Server sends fixed reason codes, never exception text or credentials.
-            const auto code = reply.value("code", std::string("unavailable"));
             if (code == "unsupported") error_ = "Remote backend does not implement this operation";
             else if (code == "busy") error_ = "Remote work already has an active connection";
             else if (code == "expired") error_ = "Remote work expired or requires a fresh attachment";
@@ -60,6 +73,7 @@ bool TcpIpcTransport::Connect(uint32_t, int timeoutMs) {
     { std::lock_guard<std::mutex> lock(readyMutex_); readyReceived_ = false; }
     lastRecvTime_ = GetTickCount64();
     connected_ = true;
+    openOutcome_ = RemoteOpenOutcome::Opened;
     error_.clear();
     return true;
 }

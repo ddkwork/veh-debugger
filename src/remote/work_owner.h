@@ -30,6 +30,7 @@ public:
     bool MatchesRequest(const std::string& backend, const std::string& requestId) const;
     ULONGLONG Expiry() const;
     bool Closing() const;
+    bool HasPendingWork(const std::shared_ptr<Channel>&) const;
     void Stop();
     void Notify(std::function<void()> notify);
 private:

@@ -103,7 +103,9 @@ request bodies, token values, or exception strings.
 The runner bounds simultaneous connections to 8, retained jobs to 32, and tracked
 peer addresses to 128. Each peer address gets at most 16 connection attempts and
 5 authentication failures per minute. Authentication and control exchanges use
-bounded local monotonic deadlines.
+bounded local monotonic deadlines. A synchronous command keeps its connection
+through idle input intervals while its bounded backend command deadline runs;
+the 15-second input wait does not cut a longer active operation short.
 
 Unexpected disconnection retains the backend and its events for up to 60 seconds.
 Attach again with the same backend, scope, and PID to resume that work; the returned
@@ -112,7 +114,11 @@ Reconnect refuses while an accepted command remains in flight. Commands are
 never automatically replayed. `backend.remote.outcome_unknown` reports uncertain
 delivery/effects; inspect target state before issuing another mutating command.
 The frontend reuses a launch request identity when retrying the same uncertain
-launch during this window, instead of creating a second process.
+launch during this window, instead of creating a second process. A failure before any OpenWork delivery or
+an explicit resident rejection clears a new pending launch, so correcting a
+missing program does not require restarting MCP. Lost replies, existing-work
+busy replies, and replies from older runners without an explicit outcome remain
+uncertain and retain duplicate-launch protection.
 
 Explicit detach ends the resident work and releases an owned host target, including
 its initial suspended thread. Lease expiry or runner shutdown tears down owned

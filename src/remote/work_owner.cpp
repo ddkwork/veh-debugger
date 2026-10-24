@@ -183,6 +183,10 @@ bool WorkOwner::MatchesRequest(const std::string& backend, const std::string& id
     return !requestId_.empty() && backendName_ == backend && requestId_ == id;
 }
 bool WorkOwner::Closing() const { std::lock_guard<std::mutex> lock(mutex_); return closing_; }
+bool WorkOwner::HasPendingWork(const std::shared_ptr<Channel>& peer) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return peer_ == peer && active_ && !closing_ && (inFlight_ || !requests_.empty());
+}
 ULONGLONG WorkOwner::Expiry() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return peer_ ? 0 : disconnectedAt_ + 60000;
@@ -351,11 +355,18 @@ void WorkOwner::Worker() {
         std::shared_ptr<Channel> peer;
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            inFlight_ = false;
             if (request.epoch == epoch_ && active_) peer = peer_;
             else outcomeUnknown_ = true;
         }
-        if (response && peer) { FlushEvents(); Send(peer, request.command, result.data(), static_cast<uint32_t>(result.size())); }
+        bool delivered = false;
+        if (response && peer) {
+            delivered = FlushEvents() && Send(peer, request.command, result.data(), static_cast<uint32_t>(result.size()));
+        }
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (response && !delivered) outcomeUnknown_ = true;
+            inFlight_ = false;
+        }
         if (notify_) notify_();
     }
 }

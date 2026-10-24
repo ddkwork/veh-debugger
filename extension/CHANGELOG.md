@@ -18,6 +18,8 @@
 - **Event-driven MCP waits** -- the main loop, heartbeat and kernel-debug pipe wait for input or events instead of periodic timer polling.
 
 ### Fixed
+- **Remote long-running commands** -- a pending command now keeps its TCP connection through idle input intervals, using the bounded backend command deadline; response delivery remains in flight until complete.
+- **Remote launch failure recovery** -- failures before OpenWork delivery and explicit resident rejections clear launch retry state. Lost or ambiguous replies retain the same request identity, preventing duplicate process creation on retry.
 - **In-flight breakpoint removal** -- a debugger INT3 dispatched after its breakpoint was removed now replays the restored instruction instead of skipping its first byte as a program-owned DebugBreak. This prevents instruction corruption and target crashes during repeated caller traces; original program INT3 instructions retain their normal handling.
 - **Pipe connection diagnostics** -- connection timeouts retain the last pipe error instead of reporting an uninformative timeout alone.
 - **Caller trace leaving a hypervisor target suspended** -- `veh_trace_callers` no longer sends its automatic continue and pause to the hypervisor backend, whose hidden hook needs no resume. The pause after collection suspended every thread of a running target until the debugger detached. The VEH DLL backend keeps its resume and pause around the INT3 trace.
