@@ -3,6 +3,18 @@
 Releases are deliberate external actions. Start this procedure only after the
 user explicitly authorizes publishing and chooses the version number.
 
+## Local version preparation without publishing
+
+A chosen development version may be built and copied locally while its notes stay
+under `Unreleased`. Validate that state without freezing notes or creating assets:
+
+```powershell
+powershell -NoProfile -File scripts/prepare-release.ps1 -Version VERSION -ValidateOnly -ChangelogMode Unreleased
+```
+
+This mode does not package or publish. Actual packaging/publishing keeps the
+strict dated-heading checks below and still requires explicit authorization.
+
 ## 1. Prepare the release
 
 1. Finish all feature, bug-fix, audit, documentation, and test work intended for
@@ -61,7 +73,7 @@ verified binaries beside `agent-tool.exe` with the `agent-tool` `copy` operation
 ## 3. Package
 
 The checked-in helper validates version synchronization, rebuilds both
-architectures, copies the four shipped binaries into `extension/bin`, compiles the
+architectures, copies the five shipped binaries into `extension/bin`, compiles the
 extension, and creates the VSIX and binary ZIP. It does not commit, push, or
 publish anything.
 
@@ -76,6 +88,7 @@ Expected assets:
 - `extension/veh-debugger-VERSION-bin.zip`
   - `veh-debug-adapter.exe`
   - `veh-mcp-server.exe`
+  - `veh-remote-runner.exe`
   - `vcruntime_net.dll`
   - `vcruntime_net32.dll`
 

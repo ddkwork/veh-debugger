@@ -296,7 +296,16 @@ The default `lite` profile eagerly exposes only `veh_toolbox` plus launch/attach
 
 ### External backends and VM guest attachment (MCP)
 
-The default `backend="veh"` injects the VEH DLL into a host process. Select an
+When both `backend` and `agent` are omitted, launch/attach defaults to local
+`backend="veh"` and injects the VEH DLL into a host process. Registered `remote`
+profiles connect MCP over pinned TLS with one authentication per connection.
+The shipped `veh-remote-runner.exe` starts the configured backend, creates host
+targets and owns bounded reconnect leases on the analysis VM. For VirtualBox/WHPX,
+install the runner on the analysis host VM, outside the inner analyzed guest.
+Guest launch remains unsupported. Remote selection adds no eager MCP tools or
+per-command tokens. See [remote transport](docs/REMOTE_TRANSPORT.md).
+
+Select an
 external backend by registered `backend` name or explicit `agent` executable.
 Check the attach response's `backend.unsupported` for command availability;
 `noTargetFootprint` alone does not identify guest scope or imply tool parity.

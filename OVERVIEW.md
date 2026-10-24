@@ -20,7 +20,15 @@ An adapter EXE communicates with the DLL over Named Pipe IPC and speaks DAP to V
 - **DLL** (`src/dll/`): VEH handler, breakpoint/stepping, pipe server, stack walking
 - **Semantic trace**: bounded blocks/edges, register deltas, memory reads/writes, conservative dependency bitsets, conditions, region metadata, and exception continuations
 - **MCP** (`src/mcp/`): MCP server with bounded eager profiles and a lazy toolbox gateway exposing the complete debugger operation surface to AI agents
+- **Remote MCP** (`src/remote/`): resident backend/host-process owner; pinned TLS and one nonce/HMAC authentication per connection; bounded reconnect, exact agent-exit monitoring and terminal lifecycle handling
 - **Common** (`src/common/`): IPC protocol definitions, logger
+
+The diagram shows the default local VEH path. Omitting both `backend` and
+`agent` in MCP launch/attach selects it. A registered remote profile routes the
+same IPC through `TcpIpcTransport` to `veh-remote-runner.exe`, which starts the
+backend on the analysis VM. A VirtualBox/WHPX runner belongs on the analysis
+host VM, outside the inner guest. Guest launch remains unsupported. See
+[remote transport](docs/REMOTE_TRANSPORT.md) for configuration and lifetime limits.
 
 ## Key Files
 
@@ -31,6 +39,9 @@ An adapter EXE communicates with the DLL over Named Pipe IPC and speaks DAP to V
 | `src/adapter/symbol_engine.cpp/h` | Adapter-side PDB loader (O(1) StepOver via SymGetLineFromAddrW64) |
 | `src/adapter/ipc_transport.h` | Backend-neutral IPC transport interface shared by the adapter and MCP server |
 | `src/adapter/pipe_client.cpp/h` | Named Pipe IPC client (SendAndReceive, event callbacks) |
+| `src/adapter/tcp_ipc_transport.cpp/h` | Authenticated remote work connection and IPC byte transport |
+| `src/common/remote_channel.cpp/h` | Pinned Schannel TLS, private-file token loading and nonce/HMAC authentication |
+| `src/remote/main.cpp`, `work_owner.cpp/h` | Resident admission, backend lifetime, launch ownership and reconnect leases |
 | `src/adapter/transport.cpp/h` | DAP transport layer (stdin/stdout + TCP accept) |
 | `src/adapter/disassembler.h` | IDisassembler interface + Zydis/Simple backends |
 | `src/dll/veh_handler.cpp/h` | VEH exception handler (INT3, SINGLE_STEP, HW BP) |

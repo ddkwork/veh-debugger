@@ -15,6 +15,7 @@
 - **External guest attachment (MCP)** -- `veh_attach` accepts `target_scope="guest"` directly or through a registered backend. The backend validates PID and 32/64-bit metadata, without opening or monitoring the same numeric host PID. Agent reuse checks executable, arguments and scope. Guest process discovery and guest launch/stopOnEntry remain unsupported.
 
 ### Changed
+- **Remote runner distribution** -- binary ZIP and VSIX preparation now include `veh-remote-runner.exe` alongside the adapter, MCP server and both payload DLLs. Archive validation rejects a missing runner.
 - **Event-driven MCP waits** -- the main loop, heartbeat and kernel-debug pipe wait for input or events instead of periodic timer polling.
 
 ### Fixed

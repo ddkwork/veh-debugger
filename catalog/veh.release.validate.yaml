@@ -1,5 +1,5 @@
 id: veh.release.validate
-revision: 1
+revision: 2
 summary: Validate synchronized VEH Debugger release metadata without building or publishing
 use_when:
   - checking whether a chosen release version is reflected in every required metadata file
@@ -8,7 +8,7 @@ execution:
   kind: cli
   executable_ref: powershell
   cwd: .
-  argv_template: [-NoProfile, -ExecutionPolicy, Bypass, -File, scripts/prepare-release.ps1, -Version, "{version}", -ValidateOnly]
+  argv_template: [-NoProfile, -ExecutionPolicy, Bypass, -File, scripts/prepare-release.ps1, -Version, "{version}", -ValidateOnly, -ChangelogMode, "{changelog_mode}"]
   trusted_for_run: true
   timeout_sec: 60
   artifact_mode: metadata
@@ -20,6 +20,10 @@ arguments:
     type: string
     required: true
     description: Stable SemVer without a leading v
+  changelog_mode:
+    type: string
+    default: Released
+    description: Released requires a dated heading; Unreleased validates development metadata only
 inputs: [CMakeLists.txt, extension/package.json, extension/package-lock.json, extension/CHANGELOG.md, src/mcp/mcp_server.cpp, scripts/prepare-release.ps1]
 docs: [RELEASING.md]
 cache_policy: disabled

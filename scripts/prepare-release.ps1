@@ -4,7 +4,9 @@ param(
     [ValidatePattern('^\d+\.\d+\.\d+$')]
     [string]$Version,
 
-    [switch]$ValidateOnly
+    [switch]$ValidateOnly,
+    [ValidateSet('Released', 'Unreleased')]
+    [string]$ChangelogMode = 'Released'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -37,7 +39,12 @@ try {
     $escapedVersion = [regex]::Escape($Version)
     Assert-Match 'CMakeLists.txt' "project\(VEHDebugger VERSION $escapedVersion LANGUAGES CXX\)" 'CMake project version'
     Assert-Match 'src\mcp\mcp_server.cpp' "\{`"version`", `"$escapedVersion`"\}" 'MCP server version'
-    Assert-Match 'extension\CHANGELOG.md' "^## $escapedVersion - \d{4}-\d{2}-\d{2}$" 'Changelog release heading'
+    if ($ChangelogMode -eq 'Unreleased') {
+        if (-not $ValidateOnly) { throw 'Unreleased mode is for metadata validation only; dated release notes are required for packaging.' }
+        Assert-Match 'extension\CHANGELOG.md' '^## Unreleased$' 'Unreleased changelog heading'
+    } else {
+        Assert-Match 'extension\CHANGELOG.md' "^## $escapedVersion - \d{4}-\d{2}-\d{2}$" 'Changelog release heading'
+    }
 
     $package = Get-Content -LiteralPath 'extension\package.json' -Raw | ConvertFrom-Json
     if ($package.version -ne $Version) {
@@ -70,6 +77,7 @@ try {
     $artifacts = @(
         @{ Source = 'build\bin\Release\veh-debug-adapter.exe'; Name = 'veh-debug-adapter.exe' },
         @{ Source = 'build\bin\Release\veh-mcp-server.exe'; Name = 'veh-mcp-server.exe' },
+        @{ Source = 'build\bin\Release\veh-remote-runner.exe'; Name = 'veh-remote-runner.exe' },
         @{ Source = 'build\bin\Release\vcruntime_net.dll'; Name = 'vcruntime_net.dll' },
         @{ Source = 'build32\bin\Release\vcruntime_net32.dll'; Name = 'vcruntime_net32.dll' }
     )

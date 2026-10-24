@@ -170,14 +170,20 @@ function Assert-PublicReleaseInputs {
 
     $privacyPatterns = @(
         '([A-Za-z]:\\Users\\[^\\/[:space:]]+|/home/[^/[:space:]]+)',
-        '(ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY-----)',
-        'D:\\News\\'
+        '(ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY-----)'
     )
+    # Derive the local workspace prefix instead of recording a personal path.
+    $driveRoot = [System.IO.Path]::GetPathRoot($repoRoot)
+    $topFolder = $repoRoot.Substring($driveRoot.Length).Split([char]'\')[0]
+    $workspacePrefix = (Join-Path $driveRoot $topFolder).TrimEnd('\') + '\'
+    $privacyPatterns += [regex]::Escape($workspacePrefix)
+    $privacyPatterns += [regex]::Escape($workspacePrefix.Replace('\', '\\'))
+    $privacyPatterns += [regex]::Escape($workspacePrefix.Replace('\', '/'))
     foreach ($pattern in $privacyPatterns) {
         $findings = @(git grep -n -I -E -- $pattern -- `
             ':!extension/package-lock.json' ':!scripts/release.ps1' 2>$null)
         if ($LASTEXITCODE -eq 0 -and $findings.Count -ne 0) {
-            throw "Public-release privacy scan found tracked content matching $pattern. Review it before release."
+            throw "Public-release privacy scan found tracked local-path or credential content. Review it before release."
         }
         if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 1) {
             throw "git grep privacy scan failed with exit code $LASTEXITCODE."
@@ -198,9 +204,9 @@ function Assert-Archives {
     $binaryArchive = [System.IO.Compression.ZipFile]::OpenRead($zipPath)
     try {
         $actual = @($binaryArchive.Entries | ForEach-Object { $_.FullName } | Sort-Object)
-        $expected = @('vcruntime_net.dll', 'vcruntime_net32.dll', 'veh-debug-adapter.exe', 'veh-mcp-server.exe') | Sort-Object
+        $expected = @('vcruntime_net.dll', 'vcruntime_net32.dll', 'veh-debug-adapter.exe', 'veh-mcp-server.exe', 'veh-remote-runner.exe') | Sort-Object
         if (($actual -join "`n") -ne ($expected -join "`n")) {
-            throw "Binary ZIP contents differ from the four declared release files: $($actual -join ', ')"
+            throw "Binary ZIP contents differ from the five declared release files: $($actual -join ', ')"
         }
     }
     finally {
@@ -209,6 +215,10 @@ function Assert-Archives {
 
     $vsixArchive = [System.IO.Compression.ZipFile]::OpenRead($vsixPath)
     try {
+        foreach ($name in $expected) {
+            $entry = $vsixArchive.GetEntry("extension/bin/$name")
+            if ($null -eq $entry) { throw "VSIX is missing required binary: $name" }
+        }
         $unsafe = @($vsixArchive.Entries | Where-Object {
             $_.FullName -match '(?i)(^|/)(test|challenges)(/|$)|\.log$|[A-Za-z]:|(^|/)\.env($|\.)'
         })
@@ -236,7 +246,8 @@ function Invoke-ReleaseTests {
         'test/test_trace_inaccessible_range.py',
         'test/test_trace_code_stream_failure.py',
         'test/test_mcp_profiles.py',
-        'test/test_trace_heartbeat_long.py'
+        'test/test_trace_heartbeat_long.py',
+        'test/test_remote_transport.py'
     )
     foreach ($test in $tests) {
         $name = [System.IO.Path]::GetFileNameWithoutExtension($test)

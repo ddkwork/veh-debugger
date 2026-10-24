@@ -17,6 +17,7 @@ Windows debugger based on **VEH (Vectored Exception Handler)** instead of the Wi
 - **Log points** — Log `{RAX}`, `{*0x7FF600}` to Debug Console without stopping execution
 - **Multiple injection methods** — CreateRemoteThread, NtCreateThreadEx, Thread Hijack, QueueUserAPC
 - **TCP remote mode** — Debug across VMs or network
+- **Authenticated MCP backend connections** — Registered remote profiles use pinned TLS and a resident runner for backend startup, host launch and reconnect; the runner is included in the binary distribution
 - **MCP tool server** — Debugger operations exposed directly to AI agents (Claude, Cursor, Codex, etc.)
 - **Bounded semantic tracing** — Aggregate blocks/edges plus optional ordered block, memory-access, register-delta, and runtime-code events in one sequence space without per-instruction MCP traffic
 - **Large trace artifacts** — Stream up to 400 MiB of runtime code to portable `.vtc` files or export complete trace results as JSON/JSONL with compact path, hash, count, and truncation metadata
@@ -87,6 +88,16 @@ the attach response's `backend.unsupported`. This is MCP support, not a guest
 extension to the VSCode DAP launch configuration. Use `veh_toolbox` with
 `operation="describe"` for the live attach/launch schema. See the repository's
 English README for registration and prerequisites.
+
+Launch/attach defaults to local `backend="veh"` when both `backend` and `agent`
+are omitted. Select an explicit registered backend name for remote TCP connections.
+The resident `veh-remote-runner.exe` runs on the analysis VM; for VirtualBox/WHPX
+it belongs on the analysis host VM, outside the inner guest. Authentication runs
+once per connection, using a private token file and pinned server certificate.
+Successful reconnects do not consume the failed-authentication limit. Guest launch,
+remote frontend conditional breakpoints and target-side trace file pipes remain
+unsupported. The adapter's DAP TCP listener is a separate interface. Configuration
+and limits are documented in `docs/REMOTE_TRANSPORT.md` in the repository.
 
 `veh_trace_memory` preserves first-write detection when `duration_ms` is omitted.
 Add `duration_ms` (10-60000 ms) to collect location counts with `access="write"`
