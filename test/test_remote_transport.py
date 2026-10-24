@@ -566,6 +566,15 @@ try{$pin=([BitConverter]::ToString($hash.ComputeHash($cert.RawData))).Replace('-
             assert attached.get("success") and attached["addressBits"] == 32, "guest attach"
             assert attached["backend"]["targetScope"] == "guest", "guest scope"
             assert client.tool("veh_threads")["threads"][0]["id"] == 77, "guest threads"
+            previous_work = attached["backend"]["remote"]["work_id"]
+            for _ in range(20):
+                attached = client.tool("veh_attach", {"backend": "guest", "pid": 424244}, timeout=25)
+                assert attached.get("success"), attached
+                current_work = attached["backend"]["remote"]["work_id"]
+                assert current_work != previous_work, "same-PID attach did not complete detach/reconnect"
+                previous_work = current_work
+            assert client.tool("veh_threads")["count"] == 1
+            passed("20 consecutive authenticated same-PID reattachments without sleeps or quota failures")
             started = time.monotonic()
             trace = client.tool("veh_trace_callers", {"address": "0x1000", "duration_ms": 20000}, timeout=30)
             assert trace.get("totalHits") == 0 and time.monotonic() - started >= 19, "long command disconnected early"
@@ -668,6 +677,31 @@ try{$pin=([BitConverter]::ToString($hash.ComputeHash($cert.RawData))).Replace('-
                 assert KERNEL.WaitForSingleObject(target, 5000) == 0, "detached owned target did not exit"
             passed("confirmed launch rejection clears state; lost reply retry retains the exact PID")
             passed("host stop-entry launch detach resumes owned primary thread")
+            # The earlier replay, wrong pin and wrong PSK were three failures.
+            # Valid sessions must neither consume nor erase that failure budget.
+            for _ in range(2):
+                peer = connect(port, pin)
+                rejected = False
+                try:
+                    try:
+                        authenticate(peer, token, proof=b"\0" * 32)
+                    except (OSError, EOFError):
+                        rejected = True
+                finally:
+                    peer.close()
+                assert rejected, "invalid proof accepted"
+            rejected = False
+            peer = None
+            try:
+                peer = connect(port, pin)
+                authenticate(peer, token)
+            except (OSError, EOFError):
+                rejected = True
+            finally:
+                if peer:
+                    peer.close()
+            assert rejected, "five failures were erased by successful authentications"
+            passed("failed authentication budget persists across successful sessions")
             # Separate resident resets the per-address connection budget for
             # the lifecycle scenarios; every resident here is test-owned.
             runner.terminate()

@@ -101,8 +101,11 @@ work connection are rejected. Runner diagnostics contain fixed statuses, without
 request bodies, token values, or exception strings.
 
 The runner bounds simultaneous connections to 8, retained jobs to 32, and tracked
-peer addresses to 128. Each peer address gets at most 16 connection attempts and
-5 authentication failures per minute. Authentication and control exchanges use
+peer addresses with pending or failed authentication to 128. Each peer address
+gets at most five failed/pending authentication attempts in its one-minute failure
+window. Successful authentication releases its pending slot, consumes no connection
+quota, and does not reset earlier failures. Repeated valid attach/detach is not
+subject to a per-minute connection count. Authentication and control exchanges use
 bounded local monotonic deadlines. A synchronous command keeps its connection
 through idle input intervals while its bounded backend command deadline runs;
 the 15-second input wait does not cut a longer active operation short.
@@ -132,7 +135,12 @@ The VEH DLL preserves its final Detach/Shutdown acknowledgement until peer close
 or a bounded three-second drain deadline, including clients that do not read it.
 
 Explicit detach ends the resident work and releases an owned host target, including
-its initial suspended thread. Lease expiry or runner shutdown tears down owned
+its initial suspended thread. The frontend stops its reader, sends Detach, and
+waits up to five seconds for resident connection closure before reporting success.
+A repeated attach to the same registered endpoint/backend/scope/PID performs that
+confirmed detach first; other target selections retain staged connection behavior.
+If closure cannot be confirmed, detach reports an error rather than racing a new
+connection against the old owner. Lease expiry or runner shutdown tears down owned
 agents and targets. An attached pre-existing host target is never put in the
 runner's kill-on-close job. VM lifetime remains governed by the bridge's existing
 host-owner semantics.
@@ -159,7 +167,9 @@ operation. Run the backend repository's full
 analysis VM before operational deployment. `--tcp-profile` runs only its explicitly
 listed checks and must not be treated as the full backend suite. Backend agents
 must acknowledge Detach/Shutdown and preserve the reply until the reader consumes
-it or closes; a successful transport fixture run cannot establish that contract
+it or closes. Stop and step delivery must also be scoped to the owning backend
+handle, so a detached agent still being cleaned up cannot consume a new agent's
+stop merely because both target the same PID; a successful transport fixture run cannot establish that contract
 for a different agent implementation.
 
 The adapter's existing DAP TCP listener and kernel-debug TCP transport are separate

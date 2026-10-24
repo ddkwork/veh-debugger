@@ -11,6 +11,10 @@ bool DebugSession::ConnectRemoteWork(uint32_t pid, const ExternalAgent& agent, c
     if (launch && scope != "host") {
         lastAttachError_ = "Guest/VM process launch is not supported; attach to an existing target"; return false;
     }
+    if (!launch && attached_) {
+        const auto* current = dynamic_cast<const TcpIpcTransport*>(ipcTransport_.get());
+        if (current && current->MatchesWork(*agent.remote, scope, pid) && !Detach()) return false;
+    }
     nlohmann::json request{{"backend", agent.remote->backend}, {"operation", launch ? "launch" : "attach"},
         {"target_scope", scope}, {"pid", pid}};
     const bool retryingUncertainLaunch = launch && !pendingRemoteRequestId_.empty();

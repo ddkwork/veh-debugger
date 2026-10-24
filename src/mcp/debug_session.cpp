@@ -487,11 +487,16 @@ bool DebugSession::Detach() {
 	ResumeMainThread();
 	StopProcessMonitor();
 
+    const bool wasConnected = ipcTransport_->IsConnected();
+    bool detachConfirmed = true;
 	ipcTransport_->StopHeartbeat();
 	ipcTransport_->StopEventListener();
 	try {
-		ipcTransport_->SendCommand(IpcCommand::Detach);
-	} catch (...) {}
+        const bool sent = ipcTransport_->SendCommand(IpcCommand::Detach);
+        if (auto* remote = dynamic_cast<TcpIpcTransport*>(ipcTransport_.get())) {
+            detachConfirmed = !wasConnected || (sent && remote->WaitForWorkClose(5000));
+        }
+	} catch (...) { detachConfirmed = !ipcTransport_->IsRemote(); }
 	ipcTransport_->Disconnect();
 
 	{
@@ -511,8 +516,8 @@ bool DebugSession::Detach() {
 	guestTarget_ = false;vmTarget_ = false;
 	externalAttachPending_ = false;
 	targetAddressBits_ = 0;
-
-	return true;
+    if (!detachConfirmed) lastAttachError_ = "Remote detach completion was not confirmed; reconnect after the resident closes the old work";
+	return detachConfirmed;
 }
 
 bool DebugSession::Terminate(uint32_t exitCode) {

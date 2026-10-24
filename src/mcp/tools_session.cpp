@@ -307,7 +307,10 @@ json McpServer::ToolDetach(const json& args) {
 
 	// Deferred BP 워커는 영속(McpServer 생애). 워커는 session_.IsAttached()를 확인하므로
 	// detach 후 죽은 세션에 접근하지 않는다. 여기서 join하지 않는다(재attach 시 재사용).
-	session_.Detach();
+    if (!session_.Detach()) {
+        const auto& error = session_.LastAttachError();
+        return {{"error", error.empty() ? "Detach completion could not be confirmed" : error}};
+    }
 	return {{"success", true}, {"message", "Detached"}};
 }
 

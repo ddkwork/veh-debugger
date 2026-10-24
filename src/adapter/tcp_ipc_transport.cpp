@@ -77,6 +77,36 @@ bool TcpIpcTransport::Connect(uint32_t, int timeoutMs) {
     error_.clear();
     return true;
 }
+bool TcpIpcTransport::MatchesWork(const RemoteEndpoint& endpoint, const std::string& scope, uint32_t pid) const {
+    return endpoint_.address == endpoint.address && endpoint_.port == endpoint.port &&
+        endpoint_.certificateSha256 == endpoint.certificateSha256 && endpoint_.backend == endpoint.backend &&
+        endpoint_.tokenFile == endpoint.tokenFile && work_.scope == scope && work_.pid == pid;
+}
+bool TcpIpcTransport::WaitForWorkClose(int timeoutMs) {
+    if (timeoutMs <= 0) return false;
+    const auto deadline = GetTickCount64() + static_cast<ULONGLONG>(timeoutMs);
+    auto remaining = [&]() -> int {
+        const auto now = GetTickCount64();
+        return now < deadline ? static_cast<int>(deadline - now) : 0;
+    };
+    for (;;) {
+        IpcHeader header{};
+        const int budget = remaining();
+        if (!budget) return false;
+        // stopEvent_ belongs to the stopped reader. This final drain waits for
+        // the resident to retire work and close, not for that local stop signal.
+        if (!channel_.Read(&header, sizeof(header), budget)) return GetLastError() == ERROR_BROKEN_PIPE;
+        if (header.payloadSize > 64 * 1024 * 1024) return false;
+        uint8_t buffer[4096];
+        auto left = header.payloadSize;
+        while (left) {
+            const auto count = std::min<uint32_t>(left, sizeof(buffer));
+            const int payloadBudget = remaining();
+            if (!payloadBudget || !channel_.Read(buffer, count, payloadBudget)) return false;
+            left -= count;
+        }
+    }
+}
 void TcpIpcTransport::Disconnect() {
     channel_.Cancel();
     PipeClient::Disconnect();

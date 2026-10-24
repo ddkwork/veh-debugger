@@ -185,7 +185,7 @@ private:
 };
 struct Attempts {
     ULONGLONG start = 0;
-    unsigned count = 0, failures = 0;
+    unsigned failures = 0;
 };
 void Serve(const std::shared_ptr<Channel>& channel, uintptr_t socket, const Configuration& config,
     Registry& registry, std::atomic<bool>& authenticated) {
@@ -263,19 +263,32 @@ int wmain(int argc, wchar_t** argv) {
             for (auto it = clients.begin(); it != clients.end();) {
                 if (*it->done) {
                     it->thread.join();
-                    if (!*it->authenticated) ++attempts[it->address].failures;
+                    if (!*it->authenticated) {
+                        auto& budget = attempts[it->address];
+                        if (!budget.start || now - budget.start >= 60000) { budget.start = now; budget.failures = 0; }
+                        ++budget.failures;
+                    }
                     it = clients.erase(it);
                 } else ++it;
             }
             for (auto it = attempts.begin(); it != attempts.end();) {
-                if (now - it->second.start >= 60000) it = attempts.erase(it); else ++it;
+                const bool pending = std::any_of(clients.begin(), clients.end(), [&](const auto& client) {
+                    return client.address == it->first && !*client.authenticated;
+                });
+                if (now - it->second.start >= 60000) { it->second.start = now; it->second.failures = 0; }
+                // Successful authentication consumes no retry budget. Preserve
+                // failure history across successes and entries for pending auth.
+                if (!pending && !it->second.failures) it = attempts.erase(it); else ++it;
             }
             if (clients.size() >= 8 || (attempts.find(address) == attempts.end() && attempts.size() >= 128)) {
                 CloseSocket(socket); continue;
             }
             auto& budget = attempts[address];
             if (!budget.start) budget.start = now;
-            if (++budget.count > 16 || budget.failures >= 5) { CloseSocket(socket); continue; }
+            const auto pending = std::count_if(clients.begin(), clients.end(), [&](const auto& client) {
+                return client.address == address && !*client.authenticated;
+            });
+            if (budget.failures + pending >= 5) { CloseSocket(socket); continue; }
             auto channel = std::make_shared<Channel>();
             auto done = std::make_shared<std::atomic<bool>>(false);
             auto authenticated = std::make_shared<std::atomic<bool>>(false);
