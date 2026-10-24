@@ -1,169 +1,53 @@
-"""MCP veh_trace_callers test.
-
-Sets a breakpoint on WorkFunction, collects callers for 3 seconds,
-verifies at least 1 unique caller with multiple hits.
-"""
-import subprocess
-from build_paths import RELEASE
-import json
-import time
-import sys
+"""Profile a real synthetic function using the shared bounded MCP client."""
+import ctypes
 import os
-from bounded_pipe import bound
-from own_targets import note_launch, kill_launched
+from ctypes import wintypes
 
-MCP_EXE = os.path.join(RELEASE, "veh-mcp-server.exe")
-TARGET = os.path.join(RELEASE, "test_target.exe")
+from build_paths import RELEASE
+from mcp_test_client import McpClient
 
-class McpClient:
-    def __init__(self):
-        self.proc = subprocess.Popen(
-            [MCP_EXE],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        bound(self.proc)
-        self.seq = 0
 
-    def send(self, method, params=None):
-        self.seq += 1
-        msg = {"jsonrpc": "2.0", "id": self.seq, "method": method}
-        if params:
-            msg["params"] = params
-        data = json.dumps(msg) + "\n"
-        self.proc.stdin.write(data.encode())
-        self.proc.stdin.flush()
-        return self.seq
+def check(result):
+    assert "error" not in result and result.get("success", True), result
+    return result
 
-    def recv(self, timeout=30):
-        start = time.time()
-        while time.time() - start < timeout:
-            line = self.proc.stdout.readline()
-            if line:
-                line = line.decode().strip()
-                if line:
-                    try:
-                        return json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-        return None
-
-    def call_tool(self, name, args=None, timeout=30):
-        self.send("tools/call", {"name": name, "arguments": args or {}})
-        response = self.recv(timeout=timeout)
-        if name == "veh_launch":
-            note_launch(response)
-        return response
-
-    def close(self):
-        try: self.proc.stdin.close()
-        except: pass
-        try: self.proc.terminate()
-        except: pass
-        try: self.proc.wait(timeout=3)
-        except: pass
-
-def get_content(resp):
-    """Extract JSON from MCP tool response."""
-    try:
-        text = resp["result"]["content"][0]["text"]
-        return json.loads(text)
-    except:
-        return resp
 
 def main():
-    print("=== MCP TraceCallers Test ===\n")
-    c = McpClient()
-
+    client = McpClient()
+    target = None
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    kernel.OpenProcess.restype = wintypes.HANDLE
+    kernel.WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+    kernel.CloseHandle.argtypes = (wintypes.HANDLE,)
     try:
-        # 1. Initialize
-        c.send("initialize", {"protocolVersion": "2024-11-05",
-                              "clientInfo": {"name": "test", "version": "1.0"},
-                              "capabilities": {}})
-        r = c.recv()
-        print("1. Initialize OK")
-
-        # 2. Launch
-        r = c.call_tool("veh_launch", {"program": TARGET, "stopOnEntry": False})
-        data = get_content(r)
-        pid = data.get("pid")
-        print(f"2. Launched PID={pid}")
-
-        # 3. Find WorkFunction address via modules + disassembly
-        r = c.call_tool("veh_modules")
-        modules = get_content(r)
-        base = None
-        for m in modules.get("modules", []):
-            if "test_target" in m.get("name", "").lower():
-                base = int(m["baseAddress"], 16)
-                break
-        assert base is not None, "test_target module not found"
-        print(f"3. test_target base=0x{base:X}")
-
-        # Disassemble from .text to find WorkFunction (first function before main's loop)
-        # WorkFunction starts right at base+0x1000 typically
-        r = c.call_tool("veh_disassemble", {"address": f"0x{base + 0x1000:X}", "count": 50})
-        disasm = get_content(r)
-
-        # Find first RET - that's end of WorkFunction, WorkFunction entry = base+0x1000
-        work_func = base + 0x1000
-        print(f"4. WorkFunction estimated at 0x{work_func:X}")
-
-        # 4. Give process time to start its loop
-        time.sleep(1)
-
-        # 5. Call trace_callers (3 second duration)
-        print("5. Calling veh_trace_callers (3 sec)...")
-        r = c.call_tool("veh_trace_callers", {
-            "address": f"0x{work_func:X}",
-            "duration_sec": 3
-        }, timeout=20)
-        data = get_content(r)
-        print(f"   Result: {json.dumps(data, indent=2)}")
-
-        # 6. Verify results
-        if "error" in data:
-            print(f"\n>>> FAIL: Got error: {data['error']}")
-            sys.exit(1)
-
-        total_hits = data.get("totalHits", 0)
-        unique_callers = data.get("uniqueCallers", 0)
-        callers = data.get("callers", [])
-
-        print(f"\n6. Verification:")
-        print(f"   totalHits={total_hits}")
-        print(f"   uniqueCallers={unique_callers}")
-        print(f"   callers={callers}")
-
-        if total_hits < 1:
-            print(">>> FAIL: Expected at least 1 hit")
-            sys.exit(1)
-
-        if unique_callers < 1:
-            print(">>> FAIL: Expected at least 1 unique caller")
-            sys.exit(1)
-
-        if len(callers) != unique_callers:
-            print(f">>> FAIL: callers array length ({len(callers)}) != uniqueCallers ({unique_callers})")
-            sys.exit(1)
-
-        # Verify each caller has address and hitCount
-        for caller in callers:
-            assert "address" in caller, "Missing address in caller entry"
-            assert "hitCount" in caller, "Missing hitCount in caller entry"
-            assert caller["hitCount"] > 0, "hitCount should be > 0"
-            print(f"   Caller: {caller['address']} (hits: {caller['hitCount']})")
-
-        print("\n>>> PASS: TraceCallers working correctly!")
-
+        client.initialize("trace-callers-test")
+        launched = check(client.tool("veh_launch", {
+            "program": os.path.join(RELEASE, "test_target.exe"),
+            "args": ["--interval", "10"], "stopOnEntry": True,
+        }))
+        target = kernel.OpenProcess(0x00100000, False, launched["pid"])
+        assert target, ctypes.get_last_error()
+        bp = check(client.tool("veh_set_function_breakpoint", {"name": "WorkFunction"}))
+        stop = check(client.tool("veh_continue", {"wait": True, "timeout": 10}, timeout=15))
+        assert stop.get("reason") == "breakpoint", stop
+        check(client.tool("veh_remove_breakpoint", {"id": bp["id"]}))
+        result = check(client.tool("veh_trace_callers", {
+            "address": stop["address"], "duration_sec": 1,
+        }))
+        assert result["totalHits"] >= result["uniqueCallers"] > 0, result
+        assert result["uniqueCallers"] == len(result["callers"]), result
+        assert all(item["address"] and item["hitCount"] > 0 for item in result["callers"]), result
+        assert result["durationMs"] == 1000 and result["durationSec"] == 1, result
+        print("PASS callers, counts, duration aliases and notification-safe responses")
     finally:
-        # Cleanup
-        try: c.call_tool("veh_detach")
-        except: pass
-        c.close()
-        # Kill any remaining test_target
-        kill_launched()
+        client.close()
+        if target:
+            try:
+                assert kernel.WaitForSingleObject(target, 5000) == 0, "test target did not exit"
+            finally:
+                kernel.CloseHandle(target)
+
 
 if __name__ == "__main__":
     main()

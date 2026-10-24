@@ -1303,7 +1303,7 @@ std::vector<McpServer::ToolDef> McpServer::BuildAllToolsList() {
 		 {"inputSchema", {{"type", "object"}, {"properties", json::object()}}}}),
 
 		Tool(&McpServer::ToolTraceCallers, "trace", 0, true,
-			{{"name", "veh_trace_callers"}, {"description", "Profile who calls a function: sets BP at address, auto-resumes process, collects all unique callers with hit counts for duration_sec seconds, then pauses and returns results. Useful for call graph analysis and finding hot callers. x64: uses RtlVirtualUnwind for accurate caller resolution. x86: uses [ESP] (accurate only at function entry). Process is automatically resumed before tracing and paused after."},
+			{{"name", "veh_trace_callers"}, {"description", "Profile function callers with hit counts, including zero hits. duration_ms overrides duration_sec. VEH resumes before collection and pauses after; hypervisor tracing does neither. x64 unwinds callers; x86 uses [ESP], accurate only at function entry."},
 		 {"inputSchema", {{"type", "object"}, {"properties", {
 			{"address", {{"type", "string"}, {"description", "Hex address to set breakpoint (e.g. '0x7FF600001000')"}}},
 			{"duration_sec", {{"type", "integer"}, {"description", "How long to collect callers in seconds (default: 5, max: 60)"}}},

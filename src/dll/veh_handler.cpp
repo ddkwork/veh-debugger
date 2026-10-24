@@ -2317,6 +2317,17 @@ LONG VehHandler::HandleException(PEXCEPTION_POINTERS info) {
 	switch (code) {
 	case EXCEPTION_BREAKPOINT: { // 0x80000003 — INT3 히트
 		auto bp = BreakpointManager::Instance().FindByAddress(addr);
+		if (!bp && BreakpointManager::Instance().WasRecentlyRemoved(addr)) {
+			// The CPU hit our INT3 before removal, but dispatch arrived afterwards.
+			// Replay the restored instruction; treating it as DebugBreak skips its
+			// first byte and can corrupt the target's instruction/stack state.
+#ifdef _WIN64
+			info->ContextRecord->Rip = addr;
+#else
+			info->ContextRecord->Eip = static_cast<DWORD>(addr);
+#endif
+			return EXCEPTION_CONTINUE_EXECUTION;
+		}
 		if (!bp) {
 			LOG_DEBUG("FindByAddress(0x%llX) returned nullopt — not our BP", addr);
 			// A target-owned INT3 can be an exception-based control-flow edge.

@@ -5,6 +5,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 
 from build_paths import RELEASE
 from mcp_test_client import McpClient
@@ -30,10 +31,25 @@ def run():
         assert 'error' in client.tool('veh_pause'), 'Unsupported pause reported success'
         assert 'error' in client.tool('veh_terminate'), 'Unsupported terminate reported success'
         assert client.tool('veh_threads')['count'] == 1, 'Unsupported terminate detached guest'
+        # A refused step must return now, not wait five seconds for an event.
+        for step in ('veh_step_in', 'veh_step_over', 'veh_step_out'):
+            started = time.monotonic()
+            refused = client.tool(step, {'threadId': 77}, timeout=2)
+            assert 'without a stop' in refused.get('error', ''), (step, refused)
+            assert time.monotonic() - started < 2, (step, 'refusal was not immediate')
         # The host process can exit without ending the guest debugging session.
         host.stdin.close()
         host.wait(timeout=5)
         assert client.tool('veh_threads')['count'] == 1
+        assert client.tool('veh_detach').get('success')
+        # Hypervisor tracing stays non-stopping even when Continue/Pause exist.
+        traced = client.tool('veh_attach', {**args, 'agent_args': ['--metadata', 'trace']})
+        assert traced.get('success'), traced
+        empty = client.tool('veh_trace_callers', {'address': '0x1000', 'duration_ms': 50})
+        assert empty.get('totalHits') == 0 and empty.get('callers') == [], empty
+        refused = client.tool('veh_trace_callers', {'address': '0x2000', 'duration_ms': 50})
+        assert 'error' in refused and 'hook' in refused['error'], refused
+        assert client.tool('veh_threads')['threads'][0]['name'] == 'untouched', 'Trace sent Continue/Pause'
         assert client.tool('veh_detach').get('success')
         for mode in ('wrong-pid', 'bad-width', 'wrong-scope', 'not-found', 'truncated', 'host-cap'):
             result = client.tool('veh_attach', {**args, 'agent_args': ['--metadata', mode]})
@@ -57,7 +73,7 @@ def run():
                 result = configured.tool('veh_attach', {'pid': host.pid, 'backend': 'synthetic'})
                 assert result.get('success') and result['backend']['targetScope'] == 'guest', result
                 assert configured.tool('veh_detach').get('success')
-        print('PASS guest PID collision, metadata width, failure cleanup, launch rejection and registered scope')
+        print('PASS guest metadata/cleanup, step refusals, zero-call trace and no hypervisor resume/pause')
     finally:
         try:
             if client.proc.poll() is None:

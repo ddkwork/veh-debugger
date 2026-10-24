@@ -41,7 +41,15 @@ def test_named_profiles_are_bounded_and_full_remains_available():
 
     assert len(interactive) <= 10
     assert len(capture) <= 10
-    assert len(full) == 54
+    # Full inventory grows with new tools; compare both public discovery paths.
+    with McpClient(executable=_executable()) as client:
+        client.initialize("full-inventory-test")
+        listed = client.tool("veh_toolbox", {"operation": "list", "profile": "full"})
+        profiles = client.tool("veh_toolbox", {"operation": "profiles"})
+    full_names = {tool["name"] for tool in full}
+    assert full_names == {tool["name"] for tool in listed["tools"]}
+    assert {tool["name"] for tool in interactive + capture} <= full_names
+    assert next(p["eager_tools"] for p in profiles["profiles"] if p["name"] == "full") == len(full)
     assert "veh_trace_basic_blocks" not in {tool["name"] for tool in interactive}
     assert "veh_trace_basic_blocks" in {tool["name"] for tool in capture}
     assert "veh_checkpoint_restore" in {tool["name"] for tool in capture}

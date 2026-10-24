@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <array>
 #include <optional>
 #include <unordered_map>
 #include <mutex>
@@ -28,6 +29,8 @@ public:
 
 	std::optional<SoftBreakpoint> FindByAddress(uint64_t address);
 	std::optional<SoftBreakpoint> FindById(uint32_t id);
+	// Recognize an INT3 already dispatched when its breakpoint was removed.
+	bool WasRecentlyRemoved(uint64_t address);
 
 	// Called after single-step to re-enable breakpoint
 	void RearmBreakpoint(uint64_t address);
@@ -39,6 +42,9 @@ public:
 
 private:
 	bool PatchByte(uint64_t address, uint8_t byte, uint8_t* original = nullptr);
+	void RememberRemoved(const SoftBreakpoint& bp);
+	std::array<SoftBreakpoint, 64> removed_{};
+	size_t nextRemoved_ = 0;
 
 	std::unordered_map<uint32_t, SoftBreakpoint> breakpoints_;
 	std::unordered_map<uint64_t, uint32_t> addressToId_;

@@ -23,6 +23,7 @@ def session():
     kernel.OpenProcess.restype = wintypes.HANDLE
     kernel.WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
     kernel.CloseHandle.argtypes = (wintypes.HANDLE,)
+    kernel.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
     try:
         client.initialize("trace-callers-duration-test")
         launch = check(client.tool("veh_launch", {
@@ -30,7 +31,7 @@ def session():
             "args": ["--interval", "10"], "stopOnEntry": True,
         }))
         # Retain the original handle; cleanup must not adopt a reused PID.
-        target = kernel.OpenProcess(0x00100000, False, launch["pid"])
+        target = kernel.OpenProcess(0x00101000, False, launch["pid"])
         assert target, ctypes.get_last_error()
         bp = check(client.tool("veh_set_function_breakpoint", {"name": "WorkFunction"}))
         stop = check(client.tool("veh_continue", {"wait": True, "timeout": 10}, timeout=15))
@@ -38,6 +39,11 @@ def session():
         check(client.tool("veh_remove_breakpoint", {"id": bp["id"]}))
         yield client, stop["address"]
     finally:
+        if target and kernel.WaitForSingleObject(target, 0) == 0:
+            code = wintypes.DWORD()
+            kernel.GetExitCodeProcess(target, ctypes.byref(code))
+            print(f"Target exited before cleanup: 0x{code.value:08X}")
+            print("Last notifications:", list(client.notifications)[-3:])
         client.close()
         assert client.proc.poll() is not None, "MCP server did not exit"
         if target:
@@ -64,8 +70,9 @@ def test_duration_compatibility(session, route, duration, milliseconds, seconds)
         ]}))
         assert batch["failed"] == 0, batch
         result = check(batch["results"][0]["result"])
-    assert result["totalHits"] > 0, result
-    assert result["uniqueCallers"] == len(result["callers"]) > 0, result
+    # A short window may legitimately see no calls; it still has a duration result.
+    assert result["totalHits"] >= result["uniqueCallers"] >= 0, result
+    assert result["uniqueCallers"] == len(result["callers"]), result
     assert result["durationMs"] == milliseconds, result
     assert result["durationSec"] == seconds, result
     if milliseconds % 1000 == 0:

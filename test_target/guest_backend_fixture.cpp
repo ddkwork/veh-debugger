@@ -33,6 +33,7 @@ int wmain(int argc, wchar_t** argv) {
     }
     const bool machineMode=mode.rfind(L"machine",0)==0;
     const bool vmMode=mode.rfind(L"vm",0)==0||machineMode;uint32_t vmState=2;
+    uint32_t continueRequests = 0, pauseRequests = 0;
     if ((!pid&&!machineMode)||name.empty()||(machineMode&&pidProvided)) return 2;
     HANDLE pipe = CreateNamedPipeW(name.c_str(), PIPE_ACCESS_DUPLEX, PIPE_TYPE_BYTE | PIPE_WAIT, 1, 65536, 65536, 0, nullptr);
     if (pipe == INVALID_HANDLE_VALUE) return 3;
@@ -56,6 +57,10 @@ int wmain(int argc, wchar_t** argv) {
                 veh::SetCommandSupported(caps.commands,veh::IpcCommand::ControlVirtualMachine);
                 veh::SetCommandSupported(caps.commands,veh::IpcCommand::TraceVirtualCpu);
             }
+            if (mode == L"trace") {
+                for (auto op : {veh::IpcCommand::Continue, veh::IpcCommand::Pause, veh::IpcCommand::TraceCallers})
+                    veh::SetCommandSupported(caps.commands, op);
+            }
             strcpy_s(caps.name, "synthetic-guest");
             if (!reply(pipe, header.command, caps)) break;
         } else if (command == veh::IpcCommand::GetTargetInfo) {
@@ -72,6 +77,8 @@ int wmain(int argc, wchar_t** argv) {
         } else if (command == veh::IpcCommand::GetThreads) {
             struct { veh::GetThreadsResponse header; veh::ThreadInfo thread; } threads{};
             threads.header.status = veh::IpcStatus::Ok; threads.header.count = 1; threads.thread.id = 77;
+            if (mode == L"trace") strcpy_s(threads.thread.name,
+                continueRequests || pauseRequests ? "unexpected-resume-or-pause" : "untouched");
             if (!reply(pipe, header.command, threads)) break;
         } else if (command == veh::IpcCommand::ReadMemory && bytes.size() == sizeof(veh::ReadMemoryRequest)) {
             veh::ReadMemoryRequest request{}; memcpy(&request, bytes.data(), sizeof(request));
@@ -106,6 +113,13 @@ int wmain(int argc, wchar_t** argv) {
                 memcpy(data.data()+sizeof(response)+static_cast<size_t>(i)*sizeof(record),&record,sizeof(record));
             }
             if(!send(pipe,header.command,data.data(),mode==L"vm-truncated"?8:static_cast<uint32_t>(data.size())))break;
+        } else if (mode == L"trace" && command == veh::IpcCommand::TraceCallers && bytes.size() == sizeof(veh::TraceCallersRequest)) {
+            veh::TraceCallersRequest request{}; memcpy(&request, bytes.data(), sizeof(request));
+            const veh::TraceCallersResponse response{request.address == 0x2000 ? veh::IpcStatus::Unsupported : veh::IpcStatus::Ok, 0, 0};
+            if (!reply(pipe, header.command, response)) break;
+        } else if (mode == L"trace" && (command == veh::IpcCommand::Continue || command == veh::IpcCommand::Pause)) {
+            if (command == veh::IpcCommand::Continue) ++continueRequests; else ++pauseRequests;
+            if (!reply(pipe, header.command, veh::IpcStatus::Ok)) break;
         } else if (command == veh::IpcCommand::Heartbeat) {
             if (!send(pipe, static_cast<uint32_t>(veh::IpcEvent::HeartbeatAck), nullptr, 0)) break;
         } else if (command == veh::IpcCommand::Detach) {

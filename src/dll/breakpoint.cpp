@@ -66,6 +66,7 @@ bool BreakpointManager::Remove(uint32_t id) {
 		PatchByte(bp.address, bp.originalByte);
 	}
 
+	RememberRemoved(bp);
 	addressToId_.erase(bp.address);
 	breakpoints_.erase(it);
 	return true;
@@ -85,6 +86,7 @@ bool BreakpointManager::RemoveByAddress(uint64_t address) {
 		PatchByte(address, bpIt->second.originalByte);
 	}
 
+	if (bpIt != breakpoints_.end()) RememberRemoved(bpIt->second);
 	breakpoints_.erase(id);
 	addressToId_.erase(addrIt);
 	return true;
@@ -163,6 +165,39 @@ std::optional<SoftBreakpoint> BreakpointManager::FindById(uint32_t id) {
 }
 
 // 싱글스텝 완료 후 INT3 재설정
+void BreakpointManager::RememberRemoved(const SoftBreakpoint& bp) {
+	// Fixed storage: removing a breakpoint must not allocate in an exception path.
+	removed_[nextRemoved_++ % removed_.size()] = bp;
+}
+
+bool BreakpointManager::WasRecentlyRemoved(uint64_t address) {
+	uint8_t original = 0xCC;
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		for (size_t i = 0; i < removed_.size(); ++i) {
+			const auto& removed = removed_[(nextRemoved_ + removed_.size() - 1 - i) % removed_.size()];
+			if (removed.id && removed.address == address) {
+				original = removed.originalByte;
+				break;
+			}
+		}
+	}
+	if (original == 0xCC) return false; // Never swallow a target-owned INT3.
+	// Do not hold the manager mutex while calling a target API that might be hooked.
+	uint8_t current = 0;
+	SIZE_T read = 0;
+	if (!ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<const void*>(address), &current, 1, &read) || read != 1)
+		return false;
+	if (current == original) return true;
+	if (current != 0xCC) return false;
+	// A replacement breakpoint may have been installed since FindByAddress.
+	std::lock_guard<std::mutex> lock(mutex_);
+	auto active = addressToId_.find(address);
+	if (active == addressToId_.end()) return false;
+	auto bp = breakpoints_.find(active->second);
+	return bp != breakpoints_.end() && bp->second.originalByte == original;
+}
+
 void BreakpointManager::RearmBreakpoint(uint64_t address) {
 	std::lock_guard<std::mutex> lock(mutex_);
 
