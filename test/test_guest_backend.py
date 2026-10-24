@@ -26,6 +26,9 @@ def run():
         assert attached['addressBits'] == 32, attached
         threads = client.tool('veh_threads')
         assert threads['count'] == 1 and threads['threads'][0]['id'] == 77, threads
+        assert 'error' in client.tool('veh_modules'), 'Unsupported modules became an empty list'
+        module_batch = client.tool('veh_batch', {'steps': [{'tool': 'veh_modules', 'args': {}}]})
+        assert module_batch['failed'] == 1 and 'error' in module_batch['results'][0]['result'], module_batch
         assembly = client.tool('veh_disassemble', {'address': '0x1000', 'count': 2})
         assert 'edx' in json.dumps(assembly).lower() and 'inc' in json.dumps(assembly).lower(), assembly
         assert 'error' in client.tool('veh_pause'), 'Unsupported pause reported success'
@@ -111,6 +114,21 @@ def run():
         assert client.tool('veh_remove_breakpoint', {'id': software['id']}).get('success')
         unknown = client.tool('veh_continue', {'wait': True, 'timeout': 1})
         assert unknown.get('breakpointId') == 7 and 'breakpointType' not in unknown, unknown
+        assert client.tool('veh_detach').get('success')
+        for mode in ('modules-ok', 'modules-empty', 'modules-error', 'modules-short', 'modules-name'):
+            attached = client.tool('veh_attach', {**args, 'agent_args': ['--metadata', mode]})
+            assert attached.get('success'), (mode, attached)
+            modules = client.tool('veh_modules')
+            batch = client.tool('veh_batch', {'steps': [{'tool': 'veh_modules', 'args': {}}]})
+            if mode == 'modules-ok':
+                assert modules['count'] == 1 and modules['modules'][0]['name'] == 'sample.dll', modules
+                assert batch['failed'] == 0 and batch['results'][0]['result'] == modules, batch
+            elif mode == 'modules-empty':
+                assert modules == {'modules': [], 'count': 0}, modules
+                assert batch['failed'] == 0 and batch['results'][0]['result'] == modules, batch
+            else:
+                assert 'error' in modules, (mode, modules)
+                assert batch['failed'] == 1 and 'error' in batch['results'][0]['result'], (mode, batch)
         assert client.tool('veh_detach').get('success')
         for mode in ('wrong-pid', 'bad-width', 'wrong-scope', 'not-found', 'truncated', 'host-cap'):
             result = client.tool('veh_attach', {**args, 'agent_args': ['--metadata', mode]})

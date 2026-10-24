@@ -1002,7 +1002,7 @@ std::vector<ThreadEntry> DebugSession::GetThreads(std::string* error) {
 	std::memcpy(&header, respData.data(), sizeof(header));
 	const size_t payloadSize = respData.size() - sizeof(header);
 	if (payloadSize % sizeof(ThreadInfo) != 0 || header.count != payloadSize / sizeof(ThreadInfo)) {
-		if (error) *error = "GetThreads: thread count does not match the backend payload";
+		if (error) *error = "GetThreads: incomplete or malformed list (count does not match the payload)";
 		return result;
 	}
 
@@ -1013,7 +1013,7 @@ std::vector<ThreadEntry> DebugSession::GetThreads(std::string* error) {
 		const auto* end = static_cast<const char*>(std::memchr(info.name, '\0', sizeof(info.name)));
 		if (!end) {
 			result.clear();
-			if (error) *error = "GetThreads: unterminated thread name";
+			if (error) *error = "GetThreads: malformed list (unterminated thread name)";
 			return result;
 		}
 		result.push_back({info.id, std::string(info.name, static_cast<size_t>(end - info.name))});
@@ -1112,24 +1112,42 @@ std::vector<ModuleEntry> DebugSession::GetModules(std::string* error) {
 	std::vector<uint8_t> respData;
 	std::string detail;
 	if (error) error->clear();
+	// The capability is authoritative: an unadvertised command is refused,
+	// never reported as an empty list.
+	if (!backendInfo_.Supports(IpcCommand::GetModules)) {
+		if (error) *error = "GetModules: request unsupported by backend (not advertised)";
+		return result;
+	}
 	if (!ReceiveBackendReply(IpcCommand::GetModules, nullptr, 0, respData, "GetModules", detail)) {
 		if (error) *error = detail;
 		return result;
 	}
 
-	if (respData.size() < sizeof(GetModulesResponse)) { if (error) *error = detail; return result; }
-	auto* resp = reinterpret_cast<const GetModulesResponse*>(respData.data());
-	auto* infos = reinterpret_cast<const ModuleInfo*>(respData.data() + sizeof(GetModulesResponse));
+	// The whole list or nothing: the count must match the payload exactly and
+	// every name and path must end inside its field.
+	GetModulesResponse header{};
+	if (respData.size() < sizeof(header)) { if (error) *error = detail; return result; }
+	std::memcpy(&header, respData.data(), sizeof(header));
+	const size_t payloadSize = respData.size() - sizeof(header);
+	if (payloadSize % sizeof(ModuleInfo) != 0 || header.count != payloadSize / sizeof(ModuleInfo)) {
+		if (error) *error = "GetModules: incomplete or malformed list (count does not match the payload)";
+		return result;
+	}
 
-	uint32_t count = resp->count;
-	const size_t maxItems = (respData.size() > sizeof(GetModulesResponse))
-		? (respData.size() - sizeof(GetModulesResponse)) / sizeof(ModuleInfo) : 0;
-	if (count > maxItems) { if (error) *error = detail; return result; }
-
-	result.reserve(count);
-	for (uint32_t i = 0; i < count; i++) {
-		result.push_back({std::string(infos[i].name, strnlen_s(infos[i].name, sizeof(infos[i].name))),
-			std::string(infos[i].path, strnlen_s(infos[i].path, sizeof(infos[i].path))), infos[i].baseAddress, infos[i].size});
+	result.reserve(header.count);
+	for (uint32_t i = 0; i < header.count; ++i) {
+		ModuleInfo info{};
+		std::memcpy(&info, respData.data() + sizeof(header) + static_cast<size_t>(i) * sizeof(info), sizeof(info));
+		const auto* nameEnd = static_cast<const char*>(std::memchr(info.name, '\0', sizeof(info.name)));
+		const auto* pathEnd = static_cast<const char*>(std::memchr(info.path, '\0', sizeof(info.path)));
+		if (!nameEnd || !pathEnd) {
+			result.clear();
+			if (error) *error = "GetModules: malformed list (unterminated module name or path)";
+			return result;
+		}
+		result.push_back({std::string(info.name, static_cast<size_t>(nameEnd - info.name)),
+			std::string(info.path, static_cast<size_t>(pathEnd - info.path)),
+			info.baseAddress, info.size});
 	}
 	return result;
 }

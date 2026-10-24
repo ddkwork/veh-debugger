@@ -1239,7 +1239,7 @@ std::vector<McpServer::ToolDef> McpServer::BuildAllToolsList() {
 		 }}}}}),
 
 		Tool(&McpServer::ToolModules, "inspect", 0, true,
-			{{"name", "veh_modules"}, {"description", "List loaded modules (DLLs) in the target process."},
+			{{"name", "veh_modules"}, {"description", "List loaded modules (DLLs) in the target process. Unsupported or failed backend replies return an error, not an empty list."},
 		 {"inputSchema", {{"type", "object"}, {"properties", json::object()}}}}),
 
 		Tool(&McpServer::ToolDisassemble, "inspect", kInteractive, true,

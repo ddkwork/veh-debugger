@@ -74,6 +74,8 @@ int wmain(int argc, wchar_t** argv) {
             for (auto op : {veh::IpcCommand::GetCapabilities, veh::IpcCommand::GetTargetInfo, veh::IpcCommand::GetThreads,
                             veh::IpcCommand::ReadMemory, veh::IpcCommand::Heartbeat, veh::IpcCommand::Detach})
                 veh::SetCommandSupported(caps.commands, op);
+            if(mode.rfind(L"modules-",0)==0||mode.rfind(L"reply-",0)==0) // modes that serve GetModules advertise it
+                veh::SetCommandSupported(caps.commands,veh::IpcCommand::GetModules);
             if(vmMode) {
                 veh::SetCommandSupported(caps.commands,veh::IpcCommand::GetProcesses);
                 veh::SetCommandSupported(caps.commands,veh::IpcCommand::ControlVirtualMachine);
@@ -170,6 +172,26 @@ int wmain(int argc, wchar_t** argv) {
                 continueRequests || pauseRequests ? "unexpected-resume-or-pause" : "untouched");
             if(mode==L"machine-thread-name")std::memset(threads.thread.name,'A',sizeof(threads.thread.name));
             if (!reply(pipe, header.command, threads)) break;
+        } else if (command == veh::IpcCommand::GetModules) {
+            if(mode==L"modules-error") {
+                veh::GetModulesResponse response{veh::IpcStatus::Unsupported,0};
+                if(!reply(pipe,header.command,response))break;
+                continue;
+            }
+            if(mode==L"modules-empty") {
+                veh::GetModulesResponse response{veh::IpcStatus::Ok,0};
+                if(!reply(pipe,header.command,response))break;
+                continue;
+            }
+            struct {veh::GetModulesResponse header;veh::ModuleInfo module;} modules{};
+            modules.header.status=veh::IpcStatus::Ok;
+            modules.header.count=mode==L"modules-short"?2:1;
+            modules.module.baseAddress=0x1000;modules.module.size=0x1000;
+            strcpy_s(modules.module.name,"sample.dll");
+            strcpy_s(modules.module.path,"C:\\sample.dll");
+            if(mode==L"modules-name")
+                std::memset(modules.module.name,'A',sizeof(modules.module.name));
+            if(!reply(pipe,header.command,modules))break;
         } else if (command == veh::IpcCommand::ReadMemory && bytes.size() == sizeof(veh::ReadMemoryRequest)) {
             veh::ReadMemoryRequest request{}; memcpy(&request, bytes.data(), sizeof(request));
             if (request.size > 4096) { reply(pipe, header.command, veh::IpcStatus::InvalidArgs); continue; }
