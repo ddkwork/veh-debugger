@@ -1178,9 +1178,10 @@ std::vector<McpServer::ToolDef> McpServer::BuildAllToolsList() {
 		 }}, {"required", json::array({"threadId"})}}}}),
 
 		Tool(&McpServer::ToolStepOut, "session", 0, true,
-			{{"name", "veh_step_out"}, {"description", "Step out (run until current function returns)."},
+			{{"name", "veh_step_out"}, {"description", "Step out (run until current function returns). Waits for completion and returns the new instruction pointer."},
 		 {"inputSchema", {{"type", "object"}, {"properties", {
-			{"threadId", {{"type", "integer"}, {"description", "OS thread ID (from veh_threads)"}}}
+			{"threadId", {{"type", "integer"}, {"description", "OS thread ID (from veh_threads)"}}},
+			{"timeout", {{"type", "integer"}, {"description", "Max seconds to wait for the return (1-300, default: 30)"}}}
 		 }}, {"required", json::array({"threadId"})}}}}),
 
 		Tool(&McpServer::ToolPause, "session", 0, true,

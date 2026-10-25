@@ -206,8 +206,12 @@ bool DapServer::AttachGuestAgent(const Request& req, std::string& error) {
 		abort();
 		return false;
 	}
-	// Ready is consumed by PipeClient; guest events stay disabled until DAP stop semantics are implemented.
-	ipcTransport_->StartEventListener([](uint32_t, const uint8_t*, uint32_t) {});
+	// Ready is consumed by PipeClient. Stop events (breakpoint, step, exception)
+	// become DAP stopped events like a host session; only advertised commands
+	// can produce them.
+	ipcTransport_->StartEventListener([this](uint32_t eventId, const uint8_t* payload, uint32_t size) {
+		OnIpcEvent(eventId, payload, size);
+	});
 	if (!ipcTransport_->WaitForReady(3000)) {
 		error = "Guest agent did not send Ready";
 		abort();
@@ -303,7 +307,21 @@ void DapServer::HandleRequest(const Request& req) {
 			req.command == "configurationDone" || req.command == "cancel" ||
 			(req.command == "threads" && GuestSupports(IpcCommand::GetThreads)) ||
 			(req.command == "readMemory" && GuestSupports(IpcCommand::ReadMemory)) ||
-			(req.command == "disassemble" && GuestSupports(IpcCommand::ReadMemory));
+			(req.command == "disassemble" && GuestSupports(IpcCommand::ReadMemory)) ||
+			// Execution control on the backend's selected-thread stops. Steps are
+			// instruction steps (no guest symbols); frames come from registers.
+			(req.command == "setInstructionBreakpoints" && GuestSupports(IpcCommand::SetBreakpoint) &&
+				GuestSupports(IpcCommand::RemoveBreakpoint)) ||
+			((req.command == "setDataBreakpoints" || req.command == "dataBreakpointInfo") &&
+				GuestSupports(IpcCommand::SetHwBreakpoint) && GuestSupports(IpcCommand::RemoveHwBreakpoint)) ||
+			(req.command == "continue" && GuestSupports(IpcCommand::Continue)) ||
+			(req.command == "pause" && GuestSupports(IpcCommand::Pause)) ||
+			(req.command == "next" && GuestSupports(IpcCommand::StepOver)) ||
+			(req.command == "stepIn" && GuestSupports(IpcCommand::StepInto)) ||
+			(req.command == "stepOut" && GuestSupports(IpcCommand::StepOut)) ||
+			((req.command == "stackTrace" || req.command == "scopes" || req.command == "variables") &&
+				GuestSupports(IpcCommand::GetRegisters)) ||
+			req.command == "exceptionInfo";
 		if (!allowed) {
 			Response resp;
 			resp.request_seq = req.seq;
@@ -392,6 +410,8 @@ void DapServer::SendEvent(const std::string& event, const json& body) {
 		{"event", event},
 		{"body", body},
 	};
+	// A guest backend stops only the selected thread; its siblings keep running.
+	if (guestTarget_ && event == "stopped") j["body"]["allThreadsStopped"] = false;
 	{
 		std::lock_guard<std::mutex> lock(sendMutex_);
 		j["seq"] = seq_++;
@@ -1325,7 +1345,7 @@ void DapServer::OnNext(const Request& req) {
 		std::lock_guard<std::mutex> stepLock(steppingMutex_);
 		steppingMode_ = SteppingMode::Over;
 		steppingThreadId_ = threadId;
-		steppingInstruction_ = (granularity == "instruction");
+		steppingInstruction_ = guestTarget_ || (granularity == "instruction");
 		steppingStartAddr_ = 0;
 		steppingNextLineAddr_ = 0;
 		steppingSourceLine_ = 0;
@@ -1493,7 +1513,7 @@ void DapServer::OnStepIn(const Request& req) {
 		std::lock_guard<std::mutex> stepLock(steppingMutex_);
 		steppingMode_ = SteppingMode::In;
 		steppingThreadId_ = threadId;
-		steppingInstruction_ = (granularity == "instruction");
+		steppingInstruction_ = guestTarget_ || (granularity == "instruction");
 		steppingStartAddr_ = 0;
 		steppingNextLineAddr_ = 0;
 	}

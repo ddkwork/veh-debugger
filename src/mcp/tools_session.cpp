@@ -561,10 +561,30 @@ json McpServer::ToolStepOut(const json& args) {
 	session_.ResumeMainThread();
 	uint32_t threadId = JsonUint32(args, "threadId");
 	if (threadId == 0) return {{"error", "threadId is required"}};
+	const int timeoutSec = std::clamp(args.value("timeout", 30), 1, 300);
+	{
+		std::lock_guard<std::mutex> lock(stepMutex_);
+		stepCompleted_ = false;
+		stepCompletedAddr_ = 0;
+		stepCompletedThread_ = 0;
+	}
 
 	if (const IpcStatus st = session_.StepOut(threadId); st != IpcStatus::Ok)
 		return {{"error", StepRefusedMessage(threadId, st)}};
-	return {{"success", true}, {"threadId", threadId}};
+	// Like step_in: report where the step out stopped. A function can run
+	// long before it returns, so the wait is bounded by `timeout`.
+	std::unique_lock<std::mutex> lock(stepMutex_);
+	if (!stepCv_.wait_for(lock, std::chrono::seconds(timeoutSec), [this, threadId]{
+			return (stepCompleted_ && stepCompletedThread_ == threadId) || !session_.IsAttached();
+		})) {
+		return {{"error", "Step out did not complete within " + std::to_string(timeoutSec) + " s (threadId=" +
+			std::to_string(threadId) + "); the thread is still running toward its return."}};
+	}
+	if (!(stepCompleted_ && stepCompletedThread_ == threadId) && !session_.IsAttached()) {
+		return {{"error", "Target process exited during step out"}};
+	}
+	return {{"success", true}, {"threadId", threadId},
+		{"instructionPointer", (std::ostringstream() << "0x" << std::hex << stepCompletedAddr_).str()}};
 }
 
 json McpServer::ToolPause(const json& args) {
