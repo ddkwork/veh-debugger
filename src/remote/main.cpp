@@ -87,7 +87,8 @@ public:
         for (auto& owner : owners) owner->Stop();
         reaper_.join();
     }
-    std::shared_ptr<WorkOwner> Open(const Json& request, const std::shared_ptr<Channel>& peer, std::string& code, bool& outcomeUnknown) {
+    std::shared_ptr<WorkOwner> Open(const Json& request, const std::shared_ptr<Channel>& peer, std::string& code, bool& outcomeUnknown, Json& diagnostics) {
+        diagnostics = Json::object();
         outcomeUnknown = false;
         code = "invalid";
         const auto name = request.at("backend").get<std::string>();
@@ -134,10 +135,10 @@ public:
                 [](const auto& owner) { return !owner->LaunchKey().empty(); });
             if (operation == "launch" && retiredLaunches_.size() + launchCount >= 128) { code = "busy"; return {}; }
         }
-        auto owner = WorkOwner::Open(profile->second, request, code);
+        auto owner = WorkOwner::Open(profile->second, request, code, diagnostics);
         if (!owner) return {};
         owner->Notify([this] { cv_.notify_all(); });
-        if (!owner->Reserve(peer)) { owner->Stop(); code = "expired"; return {}; }
+        if (!owner->Reserve(peer)) { diagnostics = owner->StartupFailure(); owner->Stop(); code = "expired"; return {}; }
         {
             std::lock_guard<std::mutex> lock(mutex_);
             owners_.push_back(owner); cv_.notify_all();
@@ -200,9 +201,10 @@ void Serve(const std::shared_ptr<Channel>& channel, uintptr_t socket, const Conf
         if (!ReadControl(*channel, Control::OpenWork, bytes, remaining())) { channel->Cancel(); return; }
         auto request = Json::parse(bytes, nullptr, true, false);
         if (!request.is_object()) throw std::invalid_argument("request");
-        std::string code; bool outcomeUnknown = true;
-        owner = registry.Open(request, channel, code, outcomeUnknown);
+        std::string code; bool outcomeUnknown = true; Json diagnostics;
+        owner = registry.Open(request, channel, code, outcomeUnknown, diagnostics);
         Json reply = owner ? owner->Describe() : Json{{"success", false}, {"code", code}, {"outcome_unknown", outcomeUnknown}};
+        if (!owner && diagnostics.is_object() && !diagnostics.empty()) reply["diagnostics"] = std::move(diagnostics);
         auto text = reply.dump();
         if (!WriteControl(*channel, Control::Work, text.data(), static_cast<uint32_t>(text.size()), 5000) || !owner) {
             if (owner) owner->Unbind(channel);

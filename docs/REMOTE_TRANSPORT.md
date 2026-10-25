@@ -100,6 +100,18 @@ to IPC commands; TLS renegotiation and repeated authentication on an established
 work connection are rejected. Runner diagnostics contain fixed statuses, without
 request bodies, token values, or exception strings.
 
+After authentication, a failed work open can report a fixed startup stage plus
+the agent's actual exit code (unsigned decimal and eight-digit hex) and a numeric
+Windows API error when available. For example:
+`Remote backend agent exited during startup [stage=agent_pipe, agent_exit_code=37 (0x00000025)]`.
+Stages distinguish process creation, pipe connection, Ready, capabilities and
+target metadata. Exit codes are captured before cleanup, so an agent still running
+at failure is not misreported with the cleanup termination code. Exit code zero
+also counts as an early exit when startup has not completed. Backend stdout,
+stderr, arguments, environment and private paths stay on the analysis host.
+Both runner and frontend must be updated to show these optional diagnostics;
+older peers retain the existing generic error text.
+
 The runner bounds simultaneous connections to 8, retained jobs to 32, and tracked
 peer addresses with pending or failed authentication to 128. Each peer address
 gets at most five failed/pending authentication attempts in its one-minute failure

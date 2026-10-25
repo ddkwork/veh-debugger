@@ -67,15 +67,34 @@ template<class T> std::vector<uint8_t> Bytes(const T& value) {
     std::vector<uint8_t> data(sizeof(value)); memcpy(data.data(), &value, sizeof(value)); return data;
 }
 }
-std::shared_ptr<WorkOwner> WorkOwner::Open(const BackendProfile& profile, const Json& request, std::string& code) {
+std::shared_ptr<WorkOwner> WorkOwner::Open(const BackendProfile& profile, const Json& request, std::string& code, Json& diagnostics) {
+    diagnostics = Json::object();
     auto owner = std::shared_ptr<WorkOwner>(new WorkOwner);
     try {
-        if (!owner->Initialize(profile, request, code)) { owner->Stop(); return {}; }
-    } catch (...) { code = "invalid"; owner->Stop(); return {}; }
+        if (!owner->Initialize(profile, request, code)) { owner->CaptureStartupFailure(diagnostics); owner->Stop(); return {}; }
+    } catch (...) { code = "invalid"; owner->CaptureStartupFailure(diagnostics); owner->Stop(); return {}; }
+    owner->startupStage_ = "agent_watch";
     if (!RegisterWaitForSingleObject(&owner->agentWait_, owner->agentProcess_, AgentExited,
-        owner.get(), INFINITE, WT_EXECUTEONLYONCE)) { code = "unavailable"; owner->Stop(); return {}; }
+        owner.get(), INFINITE, WT_EXECUTEONLYONCE)) {
+        owner->startupError_ = GetLastError(); code = "unavailable";
+        owner->CaptureStartupFailure(diagnostics); owner->Stop(); return {};
+    }
+    owner->startupStage_ = "agent_bind";
     owner->worker_ = std::thread([owner] { owner->Worker(); });
     return owner;
+}
+Json WorkOwner::StartupFailure() const {
+    Json diagnostics; CaptureStartupFailure(diagnostics); return diagnostics;
+}
+void WorkOwner::CaptureStartupFailure(Json& diagnostics) const {
+    // Capture before Stop can terminate the process and replace its real exit code.
+    // No request arguments, paths, exception strings or backend logs cross this boundary.
+    diagnostics = {{"stage", startupStage_}};
+    if (startupError_) diagnostics["system_error"] = static_cast<uint32_t>(startupError_);
+    if (agentProcess_ && WaitForSingleObject(agentProcess_, 50) == WAIT_OBJECT_0) {
+        DWORD code = 0;
+        if (GetExitCodeProcess(agentProcess_, &code)) diagnostics["agent_exit_code"] = static_cast<uint32_t>(code);
+    }
 }
 bool WorkOwner::Initialize(const BackendProfile& profile, const Json& request, std::string& code) {
     code = "unavailable";
@@ -91,14 +110,16 @@ bool WorkOwner::Initialize(const BackendProfile& profile, const Json& request, s
     pid_ = pidValue.get<uint32_t>();
     if (operation == "attach" && (scope_ == "vm" ? pid_ != 0 : pid_ == 0)) { code = "invalid"; return false; }
     if (operation == "launch" && pid_) { code = "invalid"; return false; }
+    startupStage_ = "work_setup";
     id_ = RandomId();
     if (id_.empty()) return false;
     job_ = CreateJobObjectW(nullptr, nullptr);
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
     limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
     if (scope_ != "host") limits.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK;
-    if (!job_ || !SetInformationJobObject(job_, JobObjectExtendedLimitInformation, &limits, sizeof(limits))) return false;
+    if (!job_ || !SetInformationJobObject(job_, JobObjectExtendedLimitInformation, &limits, sizeof(limits))) return StartupError(GetLastError());
     if (operation == "launch") {
+        startupStage_ = "validation";
         requestId_ = request.at("request_id").get<std::string>();
         if (requestId_.size() != 64) { code = "invalid"; return false; }
         const auto& launch = request.at("launch");
@@ -113,40 +134,56 @@ bool WorkOwner::Initialize(const BackendProfile& profile, const Json& request, s
         }
         const auto cwd = Wide(launch.value("cwd", std::string()));
         auto environment = Environment(launch);
+        startupStage_ = "target_create";
         STARTUPINFOW si{sizeof(si)}; PROCESS_INFORMATION pi{};
         if (!CreateProcessW(program.c_str(), command.data(), nullptr, nullptr, FALSE,
             CREATE_SUSPENDED | CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT, environment.data(),
-            cwd.empty() ? nullptr : cwd.c_str(), &si, &pi)) return false;
+            cwd.empty() ? nullptr : cwd.c_str(), &si, &pi)) return StartupError(GetLastError());
         targetProcess_ = pi.hProcess; primaryThread_ = pi.hThread;
         pid_ = pi.dwProcessId; mainThreadId_ = pi.dwThreadId;
+        startupStage_ = "target_job";
         if (!AssignProcessToJobObject(job_, targetProcess_)) {
-            TerminateProcess(targetProcess_, 1); WaitForSingleObject(targetProcess_, 2000); return false;
+            const auto error = GetLastError();
+            TerminateProcess(targetProcess_, 1); WaitForSingleObject(targetProcess_, 2000); return StartupError(error);
         }
     } else if (scope_ == "host") {
+        startupStage_ = "target_open";
         targetProcess_ = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, pid_);
-        if (!targetProcess_ || WaitForSingleObject(targetProcess_, 0) != WAIT_TIMEOUT) return false;
+        if (!targetProcess_) return StartupError(GetLastError());
+        if (WaitForSingleObject(targetProcess_, 0) != WAIT_TIMEOUT) return StartupError(ERROR_PROCESS_ABORTED);
     }
-    if (scope_ == "host") { addressBits_ = Width(targetProcess_); if (!addressBits_) return false; }
+    if (scope_ == "host") { startupStage_ = "target_metadata"; addressBits_ = Width(targetProcess_); if (!addressBits_) return StartupError(GetLastError()); }
     const auto pipe = L"\\\\.\\pipe\\veh-resident-" + Wide(id_);
     auto command = Quote(profile.executable);
     if (scope_ != "vm") command += L" --pid " + std::to_wstring(pid_);
     command += L" --pipe " + Quote(pipe);
     for (const auto& value : profile.args) command += L" " + Quote(value);
     if (command.size() > 32766) { code = "invalid"; return false; }
+    startupStage_ = "agent_start";
     STARTUPINFOW si{sizeof(si)}; PROCESS_INFORMATION pi{};
     if (!CreateProcessW(profile.executable.c_str(), command.data(), nullptr, nullptr, FALSE,
-        CREATE_NO_WINDOW | CREATE_SUSPENDED, nullptr, nullptr, &si, &pi)) return false;
+        CREATE_NO_WINDOW | CREATE_SUSPENDED, nullptr, nullptr, &si, &pi)) return StartupError(GetLastError());
     agentProcess_ = pi.hProcess;
     // Guest/VM bridge children silently break away: the bridge belongs to this
     // work, but persistent VMM descendants must not inherit its kill-on-close job.
+    startupStage_ = "agent_job";
     const bool assigned = AssignProcessToJobObject(job_, agentProcess_) != FALSE;
-    if (assigned) ResumeThread(pi.hThread);
+    DWORD error = assigned ? 0 : GetLastError();
+    bool resumed = false;
+    if (assigned) {
+        startupStage_ = "agent_resume";
+        resumed = ResumeThread(pi.hThread) != static_cast<DWORD>(-1);
+        if (!resumed) error = GetLastError();
+    }
     CloseHandle(pi.hThread);
-    if (!assigned) return false;
+    if (!resumed) return StartupError(error);
+    startupStage_ = "agent_pipe";
     backend_ = std::make_unique<PipeClient>(pipe);
     if (!backend_->Connect(pid_, 5000) || backend_->PeerProcessId() != pi.dwProcessId) return false;
     backend_->StartEventListener([this](uint32_t command, const uint8_t* data, uint32_t size) { OnEvent(command, data, size); });
+    startupStage_ = "agent_ready";
     if (!backend_->WaitForReady(3000)) return false;
+    startupStage_ = "capabilities";
     std::vector<uint8_t> bytes;
     if (!backend_->SendAndReceive(IpcCommand::GetCapabilities, nullptr, 0, bytes) ||
         bytes.size() < sizeof(GetCapabilitiesResponse)) return false;
@@ -155,6 +192,7 @@ bool WorkOwner::Initialize(const BackendProfile& profile, const Json& request, s
         ((caps.flags & kCapGuestTarget) != 0) != (scope_ == "guest") ||
         ((caps.flags & kCapVirtualMachineTarget) != 0) != (scope_ == "vm")) return false;
     if (scope_ != "host") {
+        startupStage_ = "target_info";
         if (!IsCommandSupported(caps.commands, IpcCommand::GetTargetInfo) ||
             !backend_->SendAndReceive(IpcCommand::GetTargetInfo, nullptr, 0, bytes) ||
             bytes.size() != sizeof(GetTargetInfoResponse)) return false;
@@ -164,8 +202,9 @@ bool WorkOwner::Initialize(const BackendProfile& profile, const Json& request, s
             (scope_ == "vm" ? info.addressBits != 0 : info.addressBits != 32 && info.addressBits != 64)) return false;
         addressBits_ = info.addressBits;
     }
-    if (GetTickCount64() - started > 12000) { code = "expired"; return false; }
+    if (GetTickCount64() - started > 12000) { startupStage_ = "startup_deadline"; code = "expired"; return false; }
     backend_->StartHeartbeat();
+    startupStage_ = "target_resume";
     if (operation == "launch" && !request.at("launch").value("stopOnEntry", true) && !ResumeLaunchThread(0)) return false;
     disconnectedAt_ = GetTickCount64();
     code.clear();

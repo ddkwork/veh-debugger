@@ -31,6 +31,7 @@ int wmain(int argc, wchar_t** argv) {
         else if (option == L"--pipe") name = argv[i + 1];
         else if (option == L"--metadata") mode = argv[i + 1];
     }
+    if (mode == L"early-exit") return 37;
     const bool machineMode=mode.rfind(L"machine",0)==0;
     const bool vmMode=mode.rfind(L"vm",0)==0||machineMode;uint32_t vmState=2;
     uint32_t continueRequests = 0, pauseRequests = 0;
@@ -38,6 +39,7 @@ int wmain(int argc, wchar_t** argv) {
     HANDLE pipe = CreateNamedPipeW(name.c_str(), PIPE_ACCESS_DUPLEX, PIPE_TYPE_BYTE | PIPE_WAIT, 1, 65536, 65536, 0, nullptr);
     if (pipe == INVALID_HANDLE_VALUE) return 3;
     if (!ConnectNamedPipe(pipe, nullptr) && GetLastError() != ERROR_PIPE_CONNECTED) { CloseHandle(pipe); return 4; }
+    if (mode == L"ready-exit") { Sleep(100); CloseHandle(pipe); return 0; }
     send(pipe, static_cast<uint32_t>(veh::IpcEvent::Ready), nullptr, 0);
     for (;;) {
         veh::IpcHeader header{};
@@ -46,6 +48,7 @@ int wmain(int argc, wchar_t** argv) {
         if (!bytes.empty() && !transfer(pipe, false, bytes.data(), header.payloadSize)) break;
         const auto command = static_cast<veh::IpcCommand>(header.command);
         if (command == veh::IpcCommand::GetCapabilities) {
+            if (mode == L"cap-exit") ExitProcess(0xC0000135U);
             veh::GetCapabilitiesResponse caps{};
             caps.status = veh::IpcStatus::Ok; caps.backend = veh::IpcBackend::Hypervisor;
             caps.flags = veh::kCapNoTargetFootprint | (mode == L"host-cap" ? 0 : machineMode ? veh::kCapVirtualMachineTarget : veh::kCapGuestTarget);

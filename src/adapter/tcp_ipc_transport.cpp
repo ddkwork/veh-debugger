@@ -2,8 +2,42 @@
 #include <nlohmann/json.hpp>
 #include <algorithm>
 #include <utility>
+#include <cstdio>
 
 namespace veh {
+namespace {
+void AppendStartupDiagnostics(std::string& error, const nlohmann::json& reply) {
+    const auto item = reply.find("diagnostics");
+    if (item == reply.end() || !item->is_object()) return;
+    const auto stageItem = item->find("stage");
+    if (stageItem == item->end() || !stageItem->is_string()) return;
+    const auto& stage = stageItem->get_ref<const std::string&>();
+    constexpr const char* stages[] = {"validation", "work_setup", "target_create", "target_job",
+        "target_open", "target_metadata", "agent_start", "agent_job", "agent_resume",
+        "agent_pipe", "agent_ready", "capabilities", "target_info", "startup_deadline",
+        "target_resume", "agent_watch", "agent_bind"};
+    bool known = false;
+    for (const auto* candidate : stages) if (stage == candidate) known = true;
+    if (!known) return; // Never echo arbitrary remote text, paths or backend logs.
+    auto number = [&](const char* key, uint32_t& value) {
+        const auto field = item->find(key);
+        if (field == item->end() || !field->is_number_unsigned() || field->get<uint64_t>() > UINT32_MAX) return false;
+        value = field->get<uint32_t>(); return true;
+    };
+    uint32_t exitCode = 0, systemError = 0;
+    const bool exited = number("agent_exit_code", exitCode);
+    const bool systemFailure = number("system_error", systemError);
+    if (exited) error = "Remote backend agent exited during startup";
+    error += " [stage=" + stage;
+    if (exited) {
+        char hex[16]{};
+        snprintf(hex, sizeof(hex), "0x%08lX", static_cast<unsigned long>(exitCode));
+        error += ", agent_exit_code=" + std::to_string(exitCode) + " (" + hex + ")";
+    }
+    if (systemFailure) error += ", win32_error=" + std::to_string(systemError);
+    error += "]";
+}
+}
 TcpIpcTransport::TcpIpcTransport(RemoteEndpoint endpoint, std::string openRequest)
     : endpoint_(std::move(endpoint)), openRequest_(std::move(openRequest)) {}
 
@@ -49,6 +83,7 @@ bool TcpIpcTransport::Connect(uint32_t, int timeoutMs) {
             else if (code == "busy") error_ = "Remote work already has an active connection";
             else if (code == "expired") error_ = "Remote work expired or requires a fresh attachment";
             else error_ = "Remote work could not be opened";
+            AppendStartupDiagnostics(error_, reply);
             channel_.Close(); return false;
         }
         work_.id = reply.at("work_id").get<std::string>();

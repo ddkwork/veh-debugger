@@ -19,7 +19,7 @@ struct BackendProfile {
 };
 class WorkOwner : public std::enable_shared_from_this<WorkOwner> {
 public:
-    static std::shared_ptr<WorkOwner> Open(const BackendProfile&, const Json& request, std::string& code);
+    static std::shared_ptr<WorkOwner> Open(const BackendProfile&, const Json& request, std::string& code, Json& diagnostics);
     ~WorkOwner();
     bool Reserve(const std::shared_ptr<Channel>&);
     bool Activate(const std::shared_ptr<Channel>&);
@@ -29,6 +29,7 @@ public:
     bool Matches(const std::string& backend, const std::string& scope, uint32_t pid) const;
     bool MatchesRequest(const std::string& backend, const std::string& requestId) const;
     std::string LaunchKey() const;
+    Json StartupFailure() const;
     ULONGLONG Expiry() const;
     bool Closing() const;
     bool CleanupReady() const;
@@ -39,6 +40,8 @@ private:
     struct Request { uint32_t command; std::vector<uint8_t> payload; uint64_t epoch; };
     struct Frame { uint32_t command; std::vector<uint8_t> payload; };
     bool Initialize(const BackendProfile&, const Json&, std::string& code);
+    void CaptureStartupFailure(Json&) const;
+    bool StartupError(DWORD error) { startupError_ = error; return false; }
     static void CALLBACK AgentExited(void*, BOOLEAN);
     bool BackendUnavailable() const; // mutex_ held
     void OnEvent(uint32_t, const uint8_t*, uint32_t);
@@ -62,6 +65,8 @@ private:
     ULONGLONG disconnectedAt_ = 0;
     std::function<void()> notify_;
     std::string id_, backendName_, scope_, requestId_;
+    const char* startupStage_ = "validation";
+    DWORD startupError_ = 0;
     uint32_t pid_ = 0, addressBits_ = 0, mainThreadId_ = 0;
     HANDLE agentWait_ = nullptr;
     HANDLE agentProcess_ = nullptr, targetProcess_ = nullptr, primaryThread_ = nullptr, job_ = nullptr;

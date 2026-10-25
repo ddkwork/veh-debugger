@@ -467,6 +467,10 @@ try{$pin=([BitConverter]::ToString($hash.ComputeHash($cert.RawData))).Replace('-
                     "guest": {"path": backend, "target_scope": "guest", "args": ["--metadata", "delayed-trace"]},
                     "machine": {"path": backend, "target_scope": "vm", "args": ["--metadata", "machine"]},
                     "host": {"path": backend, "target_scope": "host", "args": ["--metadata", "host-cap"], "allow_launch": True},
+                    **{alias: {"path": backend, "target_scope": "guest", "args": ["--metadata", mode]}
+                       for alias, mode in (("early", "early-exit"), ("ready-exit", "ready-exit"),
+                                           ("cap-exit", "cap-exit"), ("scope-mismatch", "host-cap"))},
+                    "missing-agent": {"path": str(directory / "missing-agent.exe"), "target_scope": "guest"},
                 }}
             runner_profile = directory / "runner.json"
             runner_profile.write_text(json.dumps(profile), encoding="utf-8")
@@ -539,7 +543,9 @@ try{$pin=([BitConverter]::ToString($hash.ComputeHash($cert.RawData))).Replace('-
             # Same restrictive ACL as the valid token, so rejection tests auth itself.
             powershell("$ErrorActionPreference='Stop'; $d=$env:VEH_TEST_TEMP; Set-Acl -LiteralPath (Join-Path $d 'bad-token.txt') -AclObject (Get-Acl -LiteralPath (Join-Path $d 'token.txt'))", directory)
             mappings = {}
-            for alias, scope in (("guest", "guest"), ("machine", "vm"), ("host", "host")):
+            for alias, scope in (("guest", "guest"), ("machine", "vm"), ("host", "host"),
+                                 ("early", "guest"), ("ready-exit", "guest"), ("cap-exit", "guest"),
+                                 ("scope-mismatch", "guest"), ("missing-agent", "guest")):
                 mappings[alias] = {"target_scope": scope, "remote": {
                     "address": "127.0.0.1", "port": port, "certificate_sha256": pin,
                     "token_file": str(token_path), "backend": alias, "timeout_ms": 20000}}
@@ -575,6 +581,25 @@ try{$pin=([BitConverter]::ToString($hash.ComputeHash($cert.RawData))).Replace('-
                 previous_work = current_work
             assert client.tool("veh_threads")["count"] == 1
             passed("20 consecutive authenticated same-PID reattachments without sleeps or quota failures")
+            for alias, exit_code, stages in (
+                ("early", 37, ("agent_pipe",)),
+                ("ready-exit", 0, ("agent_ready", "agent_pipe")),
+                ("cap-exit", 0xC0000135, ("capabilities",)),
+            ):
+                failure = client.tool("veh_attach", {"backend": alias, "pid": 424244}, timeout=25)
+                error = failure.get("error", "")
+                assert "agent exited during startup" in error and f"agent_exit_code={exit_code} " in error, failure
+                assert f"0x{exit_code:08X}" in error and any(f"stage={stage}" in error for stage in stages), failure
+                assert token.hex() not in error and str(directory) not in error and "\n" not in error, "startup diagnostics exposed private text"
+                assert client.tool("veh_threads")["count"] == 1, "startup failure replaced current session"
+            missing = client.tool("veh_attach", {"backend": "missing-agent", "pid": 424244}, timeout=25)
+            assert "stage=agent_start" in missing.get("error", "") and "win32_error=2" in missing["error"], missing
+            assert "agent_exit_code" not in missing["error"], "process that never started reported an exit"
+            mismatch = client.tool("veh_attach", {"backend": "scope-mismatch", "pid": 424244}, timeout=25)
+            assert "stage=capabilities" in mismatch.get("error", ""), mismatch
+            assert "agent_exit_code" not in mismatch["error"], "cleanup termination code was mistaken for startup exit"
+            assert client.tool("veh_threads")["count"] == 1
+            passed("startup stage, real zero/37/high-bit exit codes and Win32 failure without private text")
             started = time.monotonic()
             trace = client.tool("veh_trace_callers", {"address": "0x1000", "duration_ms": 20000}, timeout=30)
             assert trace.get("totalHits") == 0 and time.monotonic() - started >= 19, "long command disconnected early"
@@ -634,6 +659,7 @@ try{$pin=([BitConverter]::ToString($hash.ComputeHash($cert.RawData))).Replace('-
             code = "from pathlib import Path;Path(" + repr(str(marker)) + ").write_text('done')"
             failed = client.tool("veh_launch", {"backend": "host", "program": str(directory / "missing-program.exe")}, timeout=25)
             assert "could not be opened" in failed.get("error", ""), "missing program did not return confirmed rejection"
+            assert "stage=target_create" in failed["error"] and "win32_error=2" in failed["error"], failed
             # A corrected program must work after a confirmed missing-file
             # rejection. Also lose its first Work reply to exercise genuine
             # uncertainty: a different launch must be refused, and identical
