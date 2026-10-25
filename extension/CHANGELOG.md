@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- **Structured backend startup diagnostics** -- an optional inherited pipe carries one fixed common error/detail record before IPC is ready. Remote startup failures show validated reasons alongside actual agent exit and OS codes, without mapping backend-specific exit numbers or forwarding logs. Existing agents retain numeric diagnostics.
 - **Authenticated remote backend connections (MCP)** -- registered TCP profiles use pinned TLS and one authentication per connection. A resident runner owns backend startup, host process launch and bounded reconnect leases; remote PIDs are never treated as local PIDs. Driver analysis VMs and VirtualBox/WHPX analysis host VMs share the transport. Guest process launch, frontend conditional breakpoints and target-side trace file pipes remain explicitly unsupported; backend capabilities stay authoritative.
 - **External host-process backends** -- attach and launch can select a registered backend or explicit agent through the shared IPC protocol without DLL injection. Host launches start suspended; command capability reporting identifies unsupported operations.
 - **System inspection through external backends** -- tools expose physical/kernel memory access, address translation, MSR/CPUID, I/O ports, IDT/APIC, PCI and kernel-module inspection. Each operation requires a supporting backend; the VEH DLL does not implement these machine-level commands.

@@ -1,5 +1,6 @@
 #pragma once
 #include "common/remote_channel.h"
+#include "startup_diagnostic_channel.h"
 #include "adapter/pipe_client.h"
 #include <nlohmann/json.hpp>
 #include <condition_variable>
@@ -67,6 +68,7 @@ private:
     std::string id_, backendName_, scope_, requestId_;
     const char* startupStage_ = "validation";
     DWORD startupError_ = 0;
+    StartupDiagnosticChannel startupDiagnostics_;
     uint32_t pid_ = 0, addressBits_ = 0, mainThreadId_ = 0;
     HANDLE agentWait_ = nullptr;
     HANDLE agentProcess_ = nullptr, targetProcess_ = nullptr, primaryThread_ = nullptr, job_ = nullptr;

@@ -112,6 +112,55 @@ stderr, arguments, environment and private paths stay on the analysis host.
 Both runner and frontend must be updated to show these optional diagnostics;
 older peers retain the existing generic error text.
 
+Optional structured startup diagnostics use `src/common/startup_diagnostics.h`,
+independently of target IPC, backend names and process exit-code conventions.
+The resident supplies a private anonymous-pipe writer using
+`VEH_STARTUP_DIAGNOSTIC_HANDLE` in the child environment. No new command-line
+argument is required. Its explicit Windows handle list inherits only this writer;
+it does not pass resident sockets, token-file handles or work handles.
+
+An agent can report one early failure before its normal IPC Ready event:
+
+```cpp
+// Capture the original API error before logging or cleanup.
+const DWORD osError = GetLastError();
+veh::ReportStartupFailure(veh::StartupError::BackendUnavailable,
+                          veh::StartupDetail::DriverOpenFailed, osError);
+return existingExitCode;
+```
+
+The helper is optional and best effort, preserves GetLastError, removes its
+environment entry, disables inheritance and closes its writer. It changes neither
+the normal agent exit code nor the backend's detailed local logs. An old runner
+does not supply the channel; an old agent ignores it and still reports its actual
+exit code. Using the same numeric exit code in two backends implies no shared
+meaning. Both the resident and frontend must support the structured fields, and
+each real backend must call the helper to provide them.
+
+| Common error (wire ID) | Detail (wire ID) |
+| --- | --- |
+| `backend_unavailable` (1) | `driver_open_failed` (1), `hypervisor_not_running` (2) |
+| `version_mismatch` (2) | `abi_mismatch` (3) |
+| `target_unavailable` (3) | `target_open_failed` (4) |
+| `ipc_setup_failed` (4) | `pipe_create_failed` (5) |
+| `invalid_configuration` (5) | `invalid_arguments` (6) |
+
+Version 1 is a single 24-byte little-endian record: magic u32 `0x31534456`,
+version u16 `1`, size u16 `24`, common error u32, detail u32, original Win32
+error u32 (zero if absent), reserved u32 `0`. Record layout is fixed on x86/x64.
+Only the listed error/detail pairs are valid. Short, oversized, unknown-version,
+unknown-ID and inconsistent records are discarded without interpreting an exit
+code as a substitute. The resident checks available bytes and never waits for
+diagnostic EOF or an agent-supplied length. No strings, raw logs, arguments, paths
+or credentials are accepted through this record.
+
+On authenticated failed OpenWork replies, the optional diagnostic fields are
+`startup_error`, `startup_detail` and `backend_system_error` (uint32).
+The frontend validates the pair again and renders only its own fixed identifiers,
+alongside the original stage, process exit code and resident Win32 error.
+These fields do not add an IPC command or advertise a backend capability.
+
+
 After attachment, a closed backend connection reports that the remote target's
 state is unknown; it does not establish a target crash. Thread/module list and
 dynamic trace errors preserve backend rejection status and distinguish incomplete

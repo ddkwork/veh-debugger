@@ -1,4 +1,5 @@
 #include "tcp_ipc_transport.h"
+#include "common/startup_diagnostics.h"
 #include <nlohmann/json.hpp>
 #include <algorithm>
 #include <utility>
@@ -35,6 +36,18 @@ void AppendStartupDiagnostics(std::string& error, const nlohmann::json& reply) {
         error += ", agent_exit_code=" + std::to_string(exitCode) + " (" + hex + ")";
     }
     if (systemFailure) error += ", win32_error=" + std::to_string(systemError);
+    uint32_t kind = 0, detail = 0, backendSystemError = 0;
+    StartupDiagnostic diagnostic;
+    if (number("startup_error", kind) && number("startup_detail", detail)) {
+        diagnostic.error = static_cast<StartupError>(kind);
+        diagnostic.detail = static_cast<StartupDetail>(detail);
+        if (ValidStartupDiagnostic(diagnostic)) {
+            error += ", error=" + std::string(StartupErrorName(diagnostic.error));
+            error += ", detail=" + std::string(StartupDetailName(diagnostic.detail));
+            if (number("backend_system_error", backendSystemError))
+                error += ", backend_win32_error=" + std::to_string(backendSystemError);
+        }
+    }
     error += "]";
 }
 }

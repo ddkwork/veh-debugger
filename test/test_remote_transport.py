@@ -469,7 +469,9 @@ try{$pin=([BitConverter]::ToString($hash.ComputeHash($cert.RawData))).Replace('-
                     "host": {"path": backend, "target_scope": "host", "args": ["--metadata", "host-cap"], "allow_launch": True},
                     **{alias: {"path": backend, "target_scope": "guest", "args": ["--metadata", mode]}
                        for alias, mode in (("early", "early-exit"), ("ready-exit", "ready-exit"),
-                                           ("cap-exit", "cap-exit"), ("scope-mismatch", "host-cap"))},
+                                           ("cap-exit", "cap-exit"), ("scope-mismatch", "host-cap"),
+                                           ("diagnostic-driver", "diagnostic-driver"), ("diagnostic-abi", "diagnostic-abi"),
+                                           ("diagnostic-invalid", "diagnostic-invalid"))},
                     "missing-agent": {"path": str(directory / "missing-agent.exe"), "target_scope": "guest"},
                 }}
             runner_profile = directory / "runner.json"
@@ -545,6 +547,7 @@ try{$pin=([BitConverter]::ToString($hash.ComputeHash($cert.RawData))).Replace('-
             mappings = {}
             for alias, scope in (("guest", "guest"), ("machine", "vm"), ("host", "host"),
                                  ("early", "guest"), ("ready-exit", "guest"), ("cap-exit", "guest"),
+                                 ("diagnostic-driver", "guest"), ("diagnostic-abi", "guest"), ("diagnostic-invalid", "guest"),
                                  ("scope-mismatch", "guest"), ("missing-agent", "guest")):
                 mappings[alias] = {"target_scope": scope, "remote": {
                     "address": "127.0.0.1", "port": port, "certificate_sha256": pin,
@@ -592,6 +595,22 @@ try{$pin=([BitConverter]::ToString($hash.ComputeHash($cert.RawData))).Replace('-
                 assert f"0x{exit_code:08X}" in error and any(f"stage={stage}" in error for stage in stages), failure
                 assert token.hex() not in error and str(directory) not in error and "\n" not in error, "startup diagnostics exposed private text"
                 assert client.tool("veh_threads")["count"] == 1, "startup failure replaced current session"
+            for alias, kind, detail in (
+                ("diagnostic-driver", "backend_unavailable", "driver_open_failed"),
+                ("diagnostic-abi", "version_mismatch", "abi_mismatch"),
+                ("diagnostic-invalid", None, None),
+            ):
+                failure = client.tool("veh_attach", {"backend": alias, "pid": 424244}, timeout=25)
+                error = failure.get("error", "")
+                assert "agent_exit_code=10 " in error and "stage=agent_pipe" in error, failure
+                if kind:
+                    assert f"error={kind}" in error and f"detail={detail}" in error, failure
+                    if alias == "diagnostic-driver":
+                        assert "backend_win32_error=5" in error, failure
+                else:
+                    assert "detail=" not in error and "error=backend_unavailable" not in error, failure
+                assert token.hex() not in error and str(directory) not in error, failure
+            checks += 1
             missing = client.tool("veh_attach", {"backend": "missing-agent", "pid": 424244}, timeout=25)
             assert "stage=agent_start" in missing.get("error", "") and "win32_error=2" in missing["error"], missing
             assert "agent_exit_code" not in missing["error"], "process that never started reported an exit"

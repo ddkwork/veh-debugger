@@ -4,6 +4,7 @@
 #include <vector>
 #include <cstring>
 #include "ipc_protocol.h"
+#include "startup_diagnostics.h"
 
 bool transfer(HANDLE pipe, bool writing, void* bytes, DWORD size) {
     auto* next = static_cast<unsigned char*>(bytes);
@@ -30,6 +31,22 @@ int wmain(int argc, wchar_t** argv) {
         if (option == L"--pid"){pid = std::stoul(argv[i + 1]);pidProvided=true;}
         else if (option == L"--pipe") name = argv[i + 1];
         else if (option == L"--metadata") mode = argv[i + 1];
+    }
+    if (mode == L"diagnostic-driver" || mode == L"diagnostic-abi") {
+        const bool driver = mode == L"diagnostic-driver";
+        veh::ReportStartupFailure(driver ? veh::StartupError::BackendUnavailable : veh::StartupError::VersionMismatch,
+            driver ? veh::StartupDetail::DriverOpenFailed : veh::StartupDetail::AbiMismatch, driver ? ERROR_ACCESS_DENIED : 0);
+        return 10; // deliberately identical exit codes: classification comes from the record
+    }
+    if (mode == L"diagnostic-invalid") {
+        wchar_t value[32]{};
+        if (GetEnvironmentVariableW(veh::kStartupDiagnosticHandle, value, 32)) {
+            HANDLE diagnostic = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(_wcstoui64(value, nullptr, 10)));
+            veh::StartupDiagnostic record; record.version = 99;
+            DWORD written = 0; WriteFile(diagnostic, &record, sizeof(record), &written, nullptr);
+            CloseHandle(diagnostic);
+        }
+        return 10;
     }
     if (mode == L"early-exit") return 37;
     const bool machineMode=mode.rfind(L"machine",0)==0;

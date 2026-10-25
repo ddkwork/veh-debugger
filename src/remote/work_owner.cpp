@@ -95,6 +95,12 @@ void WorkOwner::CaptureStartupFailure(Json& diagnostics) const {
         DWORD code = 0;
         if (GetExitCodeProcess(agentProcess_, &code)) diagnostics["agent_exit_code"] = static_cast<uint32_t>(code);
     }
+    StartupDiagnostic record;
+    if (startupDiagnostics_.Read(record)) {
+        diagnostics["startup_error"] = static_cast<uint32_t>(record.error);
+        diagnostics["startup_detail"] = static_cast<uint32_t>(record.detail);
+        if (record.systemError) diagnostics["backend_system_error"] = record.systemError;
+    }
 }
 bool WorkOwner::Initialize(const BackendProfile& profile, const Json& request, std::string& code) {
     code = "unavailable";
@@ -160,9 +166,9 @@ bool WorkOwner::Initialize(const BackendProfile& profile, const Json& request, s
     for (const auto& value : profile.args) command += L" " + Quote(value);
     if (command.size() > 32766) { code = "invalid"; return false; }
     startupStage_ = "agent_start";
-    STARTUPINFOW si{sizeof(si)}; PROCESS_INFORMATION pi{};
-    if (!CreateProcessW(profile.executable.c_str(), command.data(), nullptr, nullptr, FALSE,
-        CREATE_NO_WINDOW | CREATE_SUSPENDED, nullptr, nullptr, &si, &pi)) return StartupError(GetLastError());
+    PROCESS_INFORMATION pi{};
+    if (!startupDiagnostics_.CreateAgent(profile.executable, command.data(), pi))
+        return StartupError(GetLastError());
     agentProcess_ = pi.hProcess;
     // Guest/VM bridge children silently break away: the bridge belongs to this
     // work, but persistent VMM descendants must not inherit its kill-on-close job.
@@ -208,6 +214,7 @@ bool WorkOwner::Initialize(const BackendProfile& profile, const Json& request, s
     if (operation == "launch" && !request.at("launch").value("stopOnEntry", true) && !ResumeLaunchThread(0)) return false;
     disconnectedAt_ = GetTickCount64();
     code.clear();
+    startupDiagnostics_.Close();
     return true;
 }
 WorkOwner::~WorkOwner() { Stop(); }
