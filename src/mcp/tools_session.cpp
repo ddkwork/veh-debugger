@@ -576,7 +576,9 @@ json McpServer::ToolPause(const json& args) {
 json McpServer::ToolThreads(const json& args) {
 	if (!session_.IsAttached()) return {{"error", NotAttachedMessage()}};
 
-	auto threads = session_.GetThreads();
+	std::string error;
+	auto threads = session_.GetThreads(&error);
+	if (!error.empty()) return {{"error", error}};
 	std::vector<uint32_t> frozen;
 	session_.FreezeThread(FreezeOp::List, 0, frozen);
 	json arr = json::array();

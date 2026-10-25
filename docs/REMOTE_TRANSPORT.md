@@ -112,6 +112,11 @@ stderr, arguments, environment and private paths stay on the analysis host.
 Both runner and frontend must be updated to show these optional diagnostics;
 older peers retain the existing generic error text.
 
+After attachment, a closed backend connection reports that the remote target's
+state is unknown; it does not establish a target crash. Thread/module list and
+dynamic trace errors preserve backend rejection status and distinguish incomplete
+replies from successful empty lists or no-hit traces.
+
 The runner bounds simultaneous connections to 8, retained jobs to 32, and tracked
 peer addresses with pending or failed authentication to 128. Each peer address
 gets at most five failed/pending authentication attempts in its one-minute failure

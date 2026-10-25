@@ -285,7 +285,9 @@ json McpServer::ToolRegisters(const json& args) {
 json McpServer::ToolModules(const json& args) {
 	if (!session_.IsAttached()) return {{"error", NotAttachedMessage()}};
 
-	auto modules = session_.GetModules();
+	std::string error;
+	auto modules = session_.GetModules(&error);
+	if (!error.empty()) return {{"error", error}};
 	json arr = json::array();
 	for (auto& m : modules) {
 		char baseBuf[20], sizeBuf[20];

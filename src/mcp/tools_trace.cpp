@@ -40,12 +40,7 @@ json McpServer::ToolTraceCallers(const json& args) {
 
 	const uint32_t durationMs = DurationMs(args);
 	auto result = session_.TraceCallers(addr, durationMs);
-	if (!result.received) {
-		return {{"error", IpcErrorMessage()}};
-	}
-	if (!result.ok) {
-		return {{"error", "the backend could not trace this address (no hook could be placed there)"}};
-	}
+	if (!result.ok) return {{"error", result.error}};
 
 	json callers = json::array();
 	for (auto& c : result.callers) {
@@ -120,7 +115,7 @@ json McpServer::ToolTraceRegister(const json& args) {
 	}
 
 	auto r = session_.TraceRegister(threadId, regIndex, maxSteps, mode, compareValue);
-	if (!r.ok) return {{"error", "TraceRegister failed (thread may not be stopped)"}};
+	if (!r.ok) return {{"error", r.error}};
 
 	char addrBuf[20]; snprintf(addrBuf, sizeof(addrBuf), "0x%llX", r.address);
 	char oldBuf[20]; snprintf(oldBuf, sizeof(oldBuf), "0x%llX", r.oldValue);
@@ -171,7 +166,7 @@ json McpServer::ToolTraceMemory(const json& args) {
 			return {{"error", "duration_ms (collect mode) is not supported by this backend"}};
 		auto c = session_.TraceMemoryCollect(addr, static_cast<uint32_t>(size), static_cast<uint32_t>(durationMs),
 			access == "write" ? kTraceAccessWrite : (kTraceAccessWrite | kTraceAccessRead), static_cast<uint32_t>(maxEntries));
-		if (!c.ok) return {{"error", "TraceMemory collect failed"}};
+		if (!c.ok) return {{"error", c.error}};
 		static const char* const kRegs[16] = { "rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp",
 			"r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15" };
 		auto hex = [](uint64_t v) { char b[24]; snprintf(b, sizeof(b), "0x%llX", static_cast<unsigned long long>(v)); return std::string(b); };
@@ -202,7 +197,7 @@ json McpServer::ToolTraceMemory(const json& args) {
 	if (timeoutMs > 60000) timeoutMs = 60000;
 
 	auto r = session_.TraceMemoryWrite(addr, size, timeoutMs);
-	if (!r.ok) return {{"error", "TraceMemory failed"}};
+	if (!r.ok) return {{"error", r.error}};
 
 	char instrBuf[20]; snprintf(instrBuf, sizeof(instrBuf), "0x%llX", r.instructionAddress);
 	char oldBuf[20]; snprintf(oldBuf, sizeof(oldBuf), "0x%llX", r.oldValue);
@@ -341,6 +336,7 @@ json McpServer::ToolTraceCalls(const json& args) {
 
 	auto result = session_.TraceCalls(addresses, durationMs,
 		resolve, systemOnly);
+	if (!result.ok) return {{"error", result.error}};
 
 	json arr = json::array();
 	for (auto& e : result.entries) {

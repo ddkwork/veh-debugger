@@ -100,6 +100,7 @@ struct LocalVarEntry {
 };
 
 struct TraceResult {
+	std::string error;
 	bool received = false; // the backend answered
 	bool ok = false;       // ... with Ok (no calls in the window is still a result)
 	uint32_t totalHits = 0;
@@ -244,7 +245,7 @@ public:
 	bool IsThreadOwnedByTarget(uint32_t threadId) const;
 
 	// --- State queries ---
-	std::vector<ThreadEntry> GetThreads();
+	std::vector<ThreadEntry> GetThreads(std::string* error = nullptr);
 	// List/freeze/thaw; frozen receives the frozen thread ids after the operation
 	bool FreezeThread(FreezeOp op, uint32_t threadId, std::vector<uint32_t>& frozen);
 	std::vector<StackFrame> GetStackTrace(uint32_t threadId, uint32_t maxFrames = 20);
@@ -252,7 +253,8 @@ public:
 	bool SetRegister(uint32_t threadId, uint32_t regIndex, uint64_t value);
 	bool SetRegisters(uint32_t threadId, const RegisterSet& regs);
 	bool IsThreadStopped(uint32_t threadId);
-	std::vector<ModuleEntry> GetModules();
+	std::vector<ModuleEntry> GetModules(std::string* error = nullptr);
+	std::string DescribeIpcFailure(const PipeExchangeDiagnostics* diagnostics = nullptr) const;
 	std::vector<LocalVarEntry> EnumLocals(uint32_t threadId, uint64_t instrAddr, uint64_t frameBase);
 	// At most kSymbolizeMaxAddresses; empty on failure
 	std::vector<SymbolizeEntry> Symbolize(const std::vector<uint64_t>& addresses);
@@ -311,6 +313,7 @@ public:
 
 	// Register trace: step internally until register condition met
 	struct TraceRegResult {
+		std::string error;
 		bool ok = false;
 		bool found = false;
 		uint32_t stepsExecuted = 0;
@@ -323,6 +326,7 @@ public:
 
 	// Memory trace: HW BP to catch writes to an address
 	struct TraceMemResult {
+		std::string error;
 		bool ok = false;
 		bool found = false;
 		uint32_t threadId = 0;
@@ -333,6 +337,7 @@ public:
 	TraceMemResult TraceMemoryWrite(uint64_t address, uint32_t size, uint32_t timeoutMs);
 	// Collect mode: every instruction touching the address for durationMs, counted (nothing stops).
 	struct TraceCollectResult {
+		std::string error;
 		bool ok = false;
 		uint64_t totalHits = 0;
 		uint64_t droppedHits = 0;
@@ -367,7 +372,9 @@ public:
 		std::string functionName;
 	};
 	struct TraceCallsResult {
-		uint32_t totalHits;
+		bool ok = false;
+		std::string error;
+		uint32_t totalHits = 0;
 		std::vector<TraceCallEntry> entries;
 	};
 	TraceCallsResult TraceCalls(const std::vector<uint64_t>& addresses, uint32_t durationMs = 5000,
@@ -511,6 +518,8 @@ public:
 	static bool ResolveAddrExpr(const std::string& inner, const RegisterSet* regs, uint64_t& out);
 
 private:
+	bool ReceiveBackendReply(IpcCommand command, const void* payload, uint32_t size,
+		std::vector<uint8_t>& response, const char* operation, std::string& error, int timeoutMs = 3000);
 	std::string GetExeDir();
 	std::string ResolveDll(const std::string& dir, bool use32);
 	std::string GetDllPath(uint32_t pid);

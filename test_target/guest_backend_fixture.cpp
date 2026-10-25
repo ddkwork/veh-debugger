@@ -78,6 +78,22 @@ int wmain(int argc, wchar_t** argv) {
             if (mode == L"wrong-scope") info.scope = veh::IpcTargetScope::Host;
             if (mode == L"not-found") { info = {}; info.status = veh::IpcStatus::NotFound; }
             if (!send(pipe, header.command, &info, (mode == L"truncated"||mode==L"machine-truncated") ? 8 : sizeof(info))) break;
+        } else if (mode == L"reply-errors" &&
+                   (command == veh::IpcCommand::GetThreads || command == veh::IpcCommand::GetModules)) {
+            if (!reply(pipe, header.command, veh::IpcStatus::Unsupported)) break;
+        } else if ((mode == L"reply-empty" || mode == L"reply-truncated") &&
+                   (command == veh::IpcCommand::GetThreads || command == veh::IpcCommand::GetModules)) {
+            // Both list headers are status/count; no entries follow.
+            veh::GetThreadsResponse response{veh::IpcStatus::Ok, mode == L"reply-empty" ? 0U : 1U};
+            if (!reply(pipe, header.command, response)) break;
+        } else if (mode == L"reply-errors" && command == veh::IpcCommand::TraceRegister) {
+            veh::TraceRegisterRequest request{}; memcpy(&request, bytes.data(), sizeof(request));
+            if (request.maxSteps <= 5) {
+                if (!reply(pipe, header.command, static_cast<veh::IpcStatus>(request.maxSteps))) break;
+            } else if (request.maxSteps == 6) {
+                veh::TraceRegisterResponse response{}; response.status = veh::IpcStatus::Ok;
+                if (!reply(pipe, header.command, response)) break;
+            } else if (!reply(pipe, header.command, veh::IpcStatus::Ok)) break;
         } else if (command == veh::IpcCommand::GetThreads) {
             struct { veh::GetThreadsResponse header; veh::ThreadInfo thread; } threads{};
             threads.header.status = veh::IpcStatus::Ok; threads.header.count = 1; threads.thread.id = 77;

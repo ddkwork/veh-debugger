@@ -319,13 +319,13 @@ bool DebugSession::CompleteBackendAttach() {
         if (!backendInfo_.Supports(IpcCommand::GetTargetInfo) ||
             !ipcTransport_->SendAndReceive(IpcCommand::GetTargetInfo, nullptr, 0, bytes) ||
             bytes.size() != sizeof(info)) {
-            lastAttachError_ = "Guest backend did not provide complete target metadata.";
+            lastAttachError_ = "Backend did not provide complete target metadata.";
             return false;
         }
         memcpy(&info, bytes.data(), sizeof(info));
         if (info.status != IpcStatus::Ok || info.scope != (guestTarget_ ? IpcTargetScope::Guest : IpcTargetScope::Host) ||
             info.pid != targetPid_ || (info.addressBits != 32 && info.addressBits != 64)) {
-            lastAttachError_ = "Guest backend target identity or address width validation failed.";
+            lastAttachError_ = "Backend target identity or address width validation failed.";
             return false;
         }
         targetAddressBits_ = info.addressBits;
@@ -930,13 +930,70 @@ bool DebugSession::FreezeThread(FreezeOp op, uint32_t threadId, std::vector<uint
 	return resp->status == IpcStatus::Ok;
 }
 
-std::vector<ThreadEntry> DebugSession::GetThreads() {
+std::string DebugSession::DescribeIpcFailure(const PipeExchangeDiagnostics* diagnostics) const {
+	if (GetTargetProcess() && WaitForSingleObject(GetTargetProcess(), 0) == WAIT_OBJECT_0) {
+		DWORD code = 0;
+		if (GetExitCodeProcess(GetTargetProcess(), &code))
+			return "Target process exited (code " + std::to_string(code) + ")";
+		return "Target process exited (exit code unavailable)";
+	}
+	if (!ipcTransport_->IsConnected())
+		return ipcTransport_->IsRemote() ? "Remote backend connection closed; target state is unknown"
+			: "Backend IPC connection closed; target state is unknown";
+	if (diagnostics) {
+		switch (diagnostics->failure) {
+			case PipeExchangeFailure::WaitTimeout: return "Backend response timed out";
+			case PipeExchangeFailure::SendFailed: return "Could not send request to backend";
+			case PipeExchangeFailure::HeaderReadFailed: return "Could not read backend response header";
+			case PipeExchangeFailure::PayloadReadFailed: return "Could not read complete backend response";
+			case PipeExchangeFailure::PayloadTooLarge: return "Backend response exceeds IPC payload limit";
+			case PipeExchangeFailure::NotRunning:
+			case PipeExchangeFailure::ReaderAborted: return "Backend IPC reader stopped";
+			default: break;
+		}
+	}
+	return "Backend IPC exchange failed (no valid response)";
+}
+
+bool DebugSession::ReceiveBackendReply(IpcCommand command, const void* payload, uint32_t size,
+	std::vector<uint8_t>& response, const char* operation, std::string& error, int timeoutMs) {
+	error.clear();
+	PipeExchangeDiagnostics diagnostics{};
+	if (!ipcTransport_->SendAndReceive(command, payload, size, response, timeoutMs, &diagnostics)) {
+		error = std::string(operation) + ": " + DescribeIpcFailure(&diagnostics);
+		return false;
+	}
+	error = std::string(operation) + ": malformed or incomplete backend response";
+	if (response.size() < sizeof(IpcStatus)) return false;
+	IpcStatus status{};
+	memcpy(&status, response.data(), sizeof(status));
+	const char* reason = nullptr;
+	switch (status) {
+		case IpcStatus::Ok: return true; // caller validates the complete successful payload
+		case IpcStatus::Error: reason = "backend execution error"; break;
+		case IpcStatus::NotFound: reason = "requested object or state not found"; break;
+		case IpcStatus::InvalidArgs: reason = "backend rejected arguments"; break;
+		case IpcStatus::Unsupported: reason = "request unsupported by backend"; break;
+		case IpcStatus::LimitReached: reason = "backend resource limit reached"; break;
+		default: break;
+	}
+	error = std::string(operation) + ": " + (reason ? std::string(reason) :
+		"unknown backend status " + std::to_string(static_cast<uint32_t>(status)));
+	return false;
+}
+
+
+std::vector<ThreadEntry> DebugSession::GetThreads(std::string* error) {
 	std::vector<ThreadEntry> result;
 	std::vector<uint8_t> respData;
-	if (!ipcTransport_->SendAndReceive(IpcCommand::GetThreads, nullptr, 0, respData))
+	std::string detail;
+	if (error) error->clear();
+	if (!ReceiveBackendReply(IpcCommand::GetThreads, nullptr, 0, respData, "GetThreads", detail)) {
+		if (error) *error = detail;
 		return result;
+	}
 
-	if (respData.size() < sizeof(GetThreadsResponse)) return result;
+	if (respData.size() < sizeof(GetThreadsResponse)) { if (error) *error = detail; return result; }
 	auto* resp = reinterpret_cast<const GetThreadsResponse*>(respData.data());
 	if (resp->status != IpcStatus::Ok) return result;
 
@@ -944,11 +1001,11 @@ std::vector<ThreadEntry> DebugSession::GetThreads() {
 	uint32_t count = resp->count;
 	const size_t maxItems = (respData.size() > sizeof(GetThreadsResponse))
 		? (respData.size() - sizeof(GetThreadsResponse)) / sizeof(ThreadInfo) : 0;
-	if (count > maxItems) count = static_cast<uint32_t>(maxItems);
+	if (count > maxItems) { if (error) *error = detail; return result; }
 
 	result.reserve(count);
 	for (uint32_t i = 0; i < count; i++) {
-		result.push_back({infos[i].id, infos[i].name});
+		result.push_back({infos[i].id, std::string(infos[i].name, strnlen_s(infos[i].name, sizeof(infos[i].name)))});
 	}
 	return result;
 }
@@ -1039,24 +1096,29 @@ bool DebugSession::IsThreadStopped(uint32_t threadId) {
 	return result->status == IpcStatus::Ok && result->stopped != 0;
 }
 
-std::vector<ModuleEntry> DebugSession::GetModules() {
+std::vector<ModuleEntry> DebugSession::GetModules(std::string* error) {
 	std::vector<ModuleEntry> result;
 	std::vector<uint8_t> respData;
-	if (!ipcTransport_->SendAndReceive(IpcCommand::GetModules, nullptr, 0, respData))
+	std::string detail;
+	if (error) error->clear();
+	if (!ReceiveBackendReply(IpcCommand::GetModules, nullptr, 0, respData, "GetModules", detail)) {
+		if (error) *error = detail;
 		return result;
+	}
 
-	if (respData.size() < sizeof(GetModulesResponse)) return result;
+	if (respData.size() < sizeof(GetModulesResponse)) { if (error) *error = detail; return result; }
 	auto* resp = reinterpret_cast<const GetModulesResponse*>(respData.data());
 	auto* infos = reinterpret_cast<const ModuleInfo*>(respData.data() + sizeof(GetModulesResponse));
 
 	uint32_t count = resp->count;
 	const size_t maxItems = (respData.size() > sizeof(GetModulesResponse))
 		? (respData.size() - sizeof(GetModulesResponse)) / sizeof(ModuleInfo) : 0;
-	if (count > maxItems) count = static_cast<uint32_t>(maxItems);
+	if (count > maxItems) { if (error) *error = detail; return result; }
 
 	result.reserve(count);
 	for (uint32_t i = 0; i < count; i++) {
-		result.push_back({infos[i].name, infos[i].path, infos[i].baseAddress, infos[i].size});
+		result.push_back({std::string(infos[i].name, strnlen_s(infos[i].name, sizeof(infos[i].name))),
+			std::string(infos[i].path, strnlen_s(infos[i].path, sizeof(infos[i].path))), infos[i].baseAddress, infos[i].size});
 	}
 	return result;
 }
@@ -1408,7 +1470,7 @@ TraceResult DebugSession::TraceCallers(uint64_t address, uint32_t durationMs) {
 
 	std::vector<uint8_t> respData;
 	int timeoutMs = static_cast<int>(durationMs) + 10000;
-	const bool received = ipcTransport_->SendAndReceive(IpcCommand::TraceCallers, &req, sizeof(req), respData, timeoutMs);
+	const bool received = ReceiveBackendReply(IpcCommand::TraceCallers, &req, sizeof(req), respData, "TraceCallers", result.error, timeoutMs);
 	// Auto-pause after collection
 	if (stops) {
 		PauseRequest pauseReq{}; pauseReq.threadId = 0;
@@ -1427,7 +1489,9 @@ TraceResult DebugSession::TraceCallers(uint64_t address, uint32_t durationMs) {
 	const auto* hdr = reinterpret_cast<const TraceCallersResponse*>(respData.data());
 	if (hdr->status != IpcStatus::Ok) return result;
 
+	if (hdr->uniqueCallers > (respData.size() - sizeof(TraceCallersResponse)) / sizeof(TraceCallerEntry)) return result;
 	result.ok = true;
+	result.error.clear();
 	result.totalHits = hdr->totalHits;
 	result.uniqueCallers = hdr->uniqueCallers;
 
@@ -1457,12 +1521,13 @@ DebugSession::TraceRegResult DebugSession::TraceRegister(uint32_t threadId, uint
 
 	int timeoutMs = static_cast<int>(maxSteps) * 10 + 10000;
 	std::vector<uint8_t> respData;
-	if (!ipcTransport_->SendAndReceive(IpcCommand::TraceRegister, &req, sizeof(req), respData, timeoutMs)) {
+	if (!ReceiveBackendReply(IpcCommand::TraceRegister, &req, sizeof(req), respData, "TraceRegister", result.error, timeoutMs)) {
 		return result;
 	}
 	if (respData.size() < sizeof(TraceRegisterResponse)) return result;
 	auto* resp = reinterpret_cast<const TraceRegisterResponse*>(respData.data());
-	result.ok = (resp->status == IpcStatus::Ok);
+	result.ok = true;
+	result.error.clear();
 	result.found = resp->found != 0;
 	result.stepsExecuted = resp->stepsExecuted;
 	result.address = resp->address;
@@ -1480,12 +1545,13 @@ DebugSession::TraceMemResult DebugSession::TraceMemoryWrite(uint64_t address, ui
 
 	int ipcTimeout = static_cast<int>(timeoutMs) + 10000;
 	std::vector<uint8_t> respData;
-	if (!ipcTransport_->SendAndReceive(IpcCommand::TraceMemory, &req, sizeof(req), respData, ipcTimeout)) {
+	if (!ReceiveBackendReply(IpcCommand::TraceMemory, &req, sizeof(req), respData, "TraceMemory", result.error, ipcTimeout)) {
 		return result;
 	}
 	if (respData.size() < sizeof(TraceMemoryResponse)) return result;
 	auto* resp = reinterpret_cast<const TraceMemoryResponse*>(respData.data());
-	result.ok = (resp->status == IpcStatus::Ok);
+	result.ok = true;
+	result.error.clear();
 	result.found = resp->found != 0;
 	result.threadId = resp->threadId;
 	result.instructionAddress = resp->instructionAddress;
@@ -1504,13 +1570,15 @@ DebugSession::TraceCollectResult DebugSession::TraceMemoryCollect(uint64_t addre
 	req.access = access;
 	req.maxEntries = maxEntries;
 	std::vector<uint8_t> respData;
-	if (!ipcTransport_->SendAndReceive(IpcCommand::TraceMemoryCollect, &req, sizeof(req), respData,
-			static_cast<int>(durationMs) + 10000))
+	if (!ReceiveBackendReply(IpcCommand::TraceMemoryCollect, &req, sizeof(req), respData,
+		"TraceMemoryCollect", result.error, static_cast<int>(durationMs) + 10000))
 		return result;
 	if (respData.size() < sizeof(TraceMemoryCollectResponse)) return result;
 	TraceMemoryCollectResponse head{};
 	memcpy(&head, respData.data(), sizeof(head));
-	result.ok = head.status == IpcStatus::Ok;
+	if (head.entryCount > (respData.size() - sizeof(head)) / sizeof(TraceMemoryCollectEntry)) return result;
+	result.ok = true;
+	result.error.clear();
 	result.totalHits = head.totalHits;
 	result.droppedHits = head.droppedHits;
 	const size_t room = (respData.size() - sizeof(head)) / sizeof(TraceMemoryCollectEntry);
@@ -1603,8 +1671,8 @@ DebugSession::TraceCallsResult DebugSession::TraceCalls(
 
 	int timeoutMs = static_cast<int>(durationMs) + 30000;
 	std::vector<uint8_t> respData;
-	if (!ipcTransport_->SendAndReceive(IpcCommand::TraceCalls, payload.data(),
-	                                static_cast<uint32_t>(payload.size()), respData, timeoutMs))
+	if (!ReceiveBackendReply(IpcCommand::TraceCalls, payload.data(),
+		static_cast<uint32_t>(payload.size()), respData, "TraceCalls", result.error, timeoutMs))
 		return result;
 
 	if (respData.size() < sizeof(TraceCallsResponse)) return result;
@@ -1615,7 +1683,9 @@ DebugSession::TraceCallsResult DebugSession::TraceCalls(
 	auto* entries = reinterpret_cast<const TraceCallsEntry*>(respData.data() + sizeof(TraceCallsResponse));
 	uint32_t count = resp->uniqueCount;
 	if (respData.size() < sizeof(TraceCallsResponse) + count * sizeof(TraceCallsEntry))
-		count = static_cast<uint32_t>((respData.size() - sizeof(TraceCallsResponse)) / sizeof(TraceCallsEntry));
+		return result;
+	result.ok = true;
+	result.error.clear();
 
 	for (uint32_t i = 0; i < count; i++) {
 		TraceCallEntry e;

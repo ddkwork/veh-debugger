@@ -19,6 +19,7 @@
 - **Event-driven MCP waits** -- the main loop, heartbeat and kernel-debug pipe wait for input or events instead of periodic timer polling.
 
 ### Fixed
+- **Accurate backend failure results** -- thread/module queries and dynamic traces distinguish backend rejection, malformed replies and transport failures from valid empty results. Disconnected remote agents no longer imply a target crash, and trace errors preserve backend status instead of guessing a missing stop or hook.
 - **Remote startup diagnostics** -- failed work opens now report a fixed startup stage, the agent's real exit code (decimal and hex) when it exited, and Windows API error codes when available. Values are captured before cleanup; backend logs, arguments and private paths are not forwarded.
 - **Remote reconnect admission** -- successful authentications no longer consume a per-address connection quota. Failed authentication remains limited, pending proofs reserve failure slots, and successful sessions do not erase prior failures.
 - **Repeated remote attachment** -- reattaching the same backend/scope/PID completes the old remote detach and waits for resident connection closure before opening the replacement. Missing closure is reported instead of returning a premature detach success.

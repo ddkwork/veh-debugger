@@ -1854,7 +1854,7 @@ std::string McpServer::NotAttachedMessage() {
 	// ambiguous when the real exit code is 259 (== STILL_ACTIVE).
 	if (hProc && WaitForSingleObject(hProc, 0) == WAIT_OBJECT_0) {
 		DWORD exitCode = 0;
-		GetExitCodeProcess(hProc, &exitCode);
+		if (!GetExitCodeProcess(hProc, &exitCode)) return "Not attached - target process exited (exit code unavailable)";
 		char buf[128];
 		snprintf(buf, sizeof(buf), "Not attached - target process exited (code %lu)", exitCode);
 		return buf;
@@ -1864,16 +1864,7 @@ std::string McpServer::NotAttachedMessage() {
 
 std::string McpServer::IpcErrorMessage() {
 	if (!session_.IsAttached()) return NotAttachedMessage();
-	HANDLE hProc = session_.GetTargetProcess();
-	if (hProc && WaitForSingleObject(hProc, 0) == WAIT_OBJECT_0) {
-		DWORD exitCode = 0;
-		GetExitCodeProcess(hProc, &exitCode);
-		char buf[128];
-		snprintf(buf, sizeof(buf), "Target process has exited (exit code: %lu)", exitCode);
-		return buf;
-	}
-	if (!session_.GetPipeClient().IsConnected()) return "Target pipe disconnected (process may have crashed)";
-	return "IPC communication failed (timeout)";
+	return session_.DescribeIpcFailure();
 }
 
 } // namespace veh

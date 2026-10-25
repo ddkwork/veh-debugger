@@ -185,7 +185,9 @@ explicitly unsupported until guest process creation and stopOnEntry are wired.
 
 `py -3 tools/run_tests.py test_guest_backend.py --jobs 1 --timeout 60` builds on
 the host-only `guest_backend_fixture` target to check PID collisions, metadata
-failures, registered scope, bitness and unsupported pause/terminate handling. It also
+failures, registered scope, bitness and unsupported pause/terminate handling.
+  Query diagnostics cover backend status rejection, truncated versus valid empty
+  lists, no-hit traces and batch error parity. It also
 checks immediate step refusals and zero-call hypervisor traces without automatic
 Continue/Pause, using the same synthetic fixture rather than a real VM.
 Attach/launch replace sessions and remain excluded from batch and breakpoint
