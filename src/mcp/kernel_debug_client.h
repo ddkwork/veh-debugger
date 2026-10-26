@@ -55,6 +55,11 @@ private:
 	bool running_ = false;
 	std::string last_stop_;
 	std::string wait_diagnostic_;
+	// The last bytes on the link (">" sent, "<" received), for diagnostics.
+	std::string trace_;
+	void Trace(char dir, const char* data, size_t n);
+public:
+	const std::string& trace() const { return trace_; }
 };
 
 } // namespace veh

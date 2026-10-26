@@ -386,7 +386,7 @@ json McpServer::ToolKdBreakpoint(const json& args)
 	// stop got no answer within 5 s while the console was still reporting the
 	// event. Z/z are idempotent: ask once more.
 	if (!kd_->Request(packet, &reply) && !kd_->Request(packet, &reply, 10000))
-		return {{"error", "no answer"}, {"diagnostic", kd_->wait_diagnostic()}};
+		return {{"error", "no answer"}, {"trace", kd_->trace()}};
 	if (reply.empty())
 		return {{"error", "breakpoints not supported by this stub"}};
 	if (reply != "OK")

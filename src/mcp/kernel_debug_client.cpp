@@ -296,12 +296,22 @@ std::unique_ptr<KdTransport> OpenKdTransport(const std::string& kind, const std:
 	return nullptr;
 }
 
+void KernelDebugClient::Trace(char dir, const char* data, size_t n)
+{
+	trace_ += dir;
+	for (size_t i = 0; i < n; ++i)
+		trace_ += (data[i] >= 0x20 && data[i] < 0x7F) ? data[i] : '.';
+	if (trace_.size() > 400)
+		trace_.erase(0, trace_.size() - 400);
+}
+
 bool KernelDebugClient::Send(const std::string& payload)
 {
 	uint8_t sum = 0;
 	for (char c : payload)
 		sum = static_cast<uint8_t>(sum + static_cast<uint8_t>(c));
 	const std::string frame = "$" + payload + "#" + kHex[sum >> 4] + kHex[sum & 15];
+	Trace('>', frame.data(), frame.size());
 	return transport_->Write(frame.data(), frame.size());
 }
 
@@ -319,7 +329,7 @@ bool KernelDebugClient::Receive(std::string* payload, uint32_t timeout_ms)
 				while (!payload->empty() && payload->back() == '\0')
 					payload->pop_back();
 				if (ack_)
-					transport_->Write("+", 1);
+					{ Trace('>', "+", 1); transport_->Write("+", 1); }
 				return true;
 			}
 		}
@@ -330,6 +340,7 @@ bool KernelDebugClient::Receive(std::string* payload, uint32_t timeout_ms)
 		const int n = transport_->Read(chunk, sizeof(chunk), static_cast<uint32_t>(end - now < 50 ? end - now : 50));
 		if (n < 0)
 			return false;
+		Trace('<', reinterpret_cast<char*>(chunk), static_cast<size_t>(n));
 		buffer_.append(reinterpret_cast<char*>(chunk), static_cast<size_t>(n));
 	}
 }
@@ -435,7 +446,7 @@ bool KernelDebugClient::WaitStop(std::string* stop, uint32_t timeout_ms)
 			char note[160];
 			std::snprintf(note, sizeof(note), "no stop reply within %u ms (%d console packet(s) skipped, %zu byte(s) buffered%s%.40s)",
 				timeout_ms, skipped, buffer_.size(), buffer_.empty() ? "" : ": ", buffer_.c_str());
-			wait_diagnostic_ = note;
+			wait_diagnostic_ = std::string(note) + " trace: " + trace_;
 			return false;
 		}
 		const bool console = stop->size() > 1 && (*stop)[0] == 'O' && *stop != "OK" &&
