@@ -21,4 +21,9 @@ std::string ValidateTraceOutputFile(const std::string& requestedPath,
 TraceOutputFileResult WriteTraceOutputFile(const std::string& requestedPath,
 	const std::string& format, const nlohmann::json& trace);
 
+// Writes JSON to a generated, non-overwriting MCP-host artifact. An empty
+// directory selects a dedicated folder under the host temporary directory.
+TraceOutputFileResult WriteJsonArtifactInDirectory(const std::string& directory,
+	const std::string& stem, const nlohmann::json& value);
+
 } // namespace veh

@@ -1,4 +1,6 @@
 """veh_batch runs the direct MCP tool implementations (single dispatch path)."""
+import hashlib
+import json
 import os
 
 
@@ -32,6 +34,33 @@ def _steps(client, steps):
     return [entry["result"] for entry in report["results"]]
 
 
+def test_batch_can_launch_then_inspect_without_a_prior_session():
+    target = os.path.join(_build_dir(), "bin", "Release", "test_target.exe")
+    with McpClient() as client:
+        client.initialize("batch-launch-test")
+        try:
+            misplaced = client.tool("veh_batch", {"steps": [
+                {"tool": "veh_modules", "args": {}},
+                {"tool": "veh_launch", "args": {"program": target}},
+            ]})
+            assert "first-step" in misplaced["error"]
+            repeated = client.tool("veh_batch", {
+                "inputs": [1],
+                "steps": [{"tool": "veh_launch", "args": {"program": target}}],
+            })
+            assert "cannot be repeated" in repeated["error"]
+            report = client.tool("veh_batch", {"steps": [
+                {"tool": "veh_launch", "args": {"program": target, "stopOnEntry": True},
+                 "result_fields": ["success", "pid"]},
+                {"tool": "veh_modules", "args": {}},
+            ]})
+            launch, modules = [entry["result"] for entry in report["results"]]
+            assert launch["success"] is True and launch["pid"] > 0
+            assert modules["modules"]
+        finally:
+            client.tool("veh_terminate")
+
+
 def test_step_waits_for_completion(session):
     client, tid = session
     ip_key = None
@@ -55,6 +84,47 @@ def test_register_fields_filter(session):
         {"tool": "veh_registers", "args": {"threadId": tid, "fields": fields}},
     ])
     assert set(direct["registers"]) == set(batched["registers"]) == {*fields, "is32bit"}
+
+
+def test_result_fields_keep_full_reference_values(session):
+    client, tid = session
+    registers = client.tool("veh_registers", {"threadId": tid})["registers"]
+    ip_key = "eip" if registers["is32bit"] else "rip"
+    report = client.tool("veh_batch", {"steps": [
+        {"tool": "veh_registers", "args": {"threadId": tid},
+         "result_fields": [f"registers.{ip_key}"]},
+        {"tool": "veh_read_memory", "args": {"address": f"$0.registers.{ip_key}", "size": 2},
+         "result_fields": ["address", "hex"]},
+    ]})
+    first, second = [entry["result"] for entry in report["results"]]
+    assert first == {"registers": {ip_key: registers[ip_key]}}
+    assert set(second) == {"address", "hex"} and len(second["hex"].split()) == 2
+
+
+def test_output_budget_spills_complete_report(session, tmp_path):
+    client, _ = session
+    base = client.tool("veh_modules")["modules"][0]["baseAddress"]
+    invalid = client.tool("veh_batch", {
+        "steps": [{"tool": "veh_modules", "args": {}}],
+        "max_output_bytes": 1024,
+        "artifact_directory": "",
+    })
+    assert "must not be empty" in invalid["error"]
+    report = client.tool("veh_batch", {
+        "steps": [{"tool": "veh_read_memory", "args": {"address": base, "size": 4096}}],
+        "max_output_bytes": 1024,
+        "artifact_directory": str(tmp_path),
+    })
+    assert report["partial"] is True and report["partial_reason"] == "max_output_bytes"
+    assert len(json.dumps(report, separators=(",", ":")).encode("utf-8")) <= 1024
+    artifact = report["artifact"]
+    path = tmp_path / os.path.basename(artifact["path"])
+    assert path.exists() and os.path.samefile(path, artifact["path"])
+    payload = path.read_bytes()
+    assert hashlib.sha256(payload).hexdigest() == artifact["sha256"]
+    full = json.loads(payload)
+    assert full["totalSteps"] == artifact["count"] == 1
+    assert len(full["results"][0]["result"]["hex"].split()) == 4096
 
 
 def test_previously_missing_tools_are_callable(session):
@@ -81,10 +151,23 @@ def test_direct_address_parser_in_batch(session):
 
 
 @pytest.mark.parametrize("tool", [
-    "veh_attach", "veh_launch", "veh_detach", "veh_terminate",
     "veh_batch", "veh_targeted_capture", "veh_toolbox",
 ])
 def test_lifecycle_and_reentrant_tools_are_blocked(session, tool):
     client, _ = session
     (result,) = _steps(client, [{"tool": tool, "args": {}}])
     assert "not available in batch steps" in result["error"]
+
+
+@pytest.mark.parametrize("tool", ["veh_detach", "veh_terminate"])
+def test_session_end_tools_are_rejected_before_batch_execution(session, tool):
+    client, _ = session
+    report = client.tool("veh_batch", {"steps": [{"tool": tool, "args": {}}]})
+    assert "detach/terminate" in report["error"]
+
+
+@pytest.mark.parametrize("tool", ["veh_attach", "veh_launch"])
+def test_session_start_tools_do_not_replace_an_active_batch_session(session, tool):
+    client, _ = session
+    report = client.tool("veh_batch", {"steps": [{"tool": tool, "args": {}}]})
+    assert "only when no session is attached" in report["error"]

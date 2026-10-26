@@ -2,6 +2,7 @@
 
 #include <windows.h>
 #include <algorithm>
+#include <cctype>
 #include <filesystem>
 #include <iomanip>
 #include <random>
@@ -152,6 +153,51 @@ TraceOutputFileResult WriteTraceOutputFile(const std::string& requestedPath,
 	result.path = WideToUtf8(finalPath.wstring());
 	result.size = payload.size();
 	return result;
+}
+
+TraceOutputFileResult WriteJsonArtifactInDirectory(const std::string& directory,
+		const std::string& stem, const nlohmann::json& value) {
+	TraceOutputFileResult failed;
+	failed.format = "json";
+	std::filesystem::path root;
+	try {
+		if (directory.empty()) {
+			std::vector<wchar_t> buffer(MAX_PATH + 2);
+			DWORD length = GetTempPathW(static_cast<DWORD>(buffer.size()), buffer.data());
+			if (!length || length >= buffer.size()) {
+				failed.error = "cannot resolve the MCP-host temporary directory"; return failed;
+			}
+			root = std::filesystem::path(buffer.data()) / L"veh-mcp-artifacts";
+			std::filesystem::create_directories(root);
+		} else {
+			root = std::filesystem::absolute(std::filesystem::u8path(directory));
+			if (!std::filesystem::exists(root) || !std::filesystem::is_directory(root)) {
+				failed.error = "artifact_directory does not exist or is not a directory"; return failed;
+			}
+		}
+	} catch (const std::exception& error) {
+		failed.error = std::string("invalid artifact_directory: ") + error.what(); return failed;
+	}
+
+	std::string safeStem;
+	for (unsigned char value : stem) {
+		if (std::isalnum(value) || value == '-' || value == '_') safeStem.push_back(static_cast<char>(value));
+		if (safeStem.size() == 48) break;
+	}
+	if (safeStem.empty()) safeStem = "veh-result";
+	std::random_device random;
+	for (unsigned attempt = 0; attempt < 32; ++attempt) {
+		uint64_t token = (static_cast<uint64_t>(random()) << 32) ^ random() ^
+			GetTickCount64() ^ (static_cast<uint64_t>(attempt) << 56);
+		std::ostringstream name;
+		name << safeStem << '-' << GetCurrentProcessId() << '-' << std::hex << token << ".json";
+		auto written = WriteTraceOutputFile((root / std::filesystem::u8path(name.str())).u8string(), "json", value);
+		if (written.success) return written;
+		if (written.error != "output_file already exists" && written.error != "cannot publish output_file")
+			return written;
+	}
+	failed.error = "cannot allocate a unique artifact path";
+	return failed;
 }
 
 } // namespace veh

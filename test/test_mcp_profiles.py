@@ -81,6 +81,32 @@ def test_toolbox_describe_handle_and_hidden_call():
             "unchanged": True,
         }
 
+        manifest = client.tool("veh_toolbox", {
+            "operation": "manifest",
+            "tools": ["veh_set_data_breakpoint", "veh_search_memory", "veh_read_memory"],
+        })
+        assert manifest["count"] == 3
+        assert {tool["name"] for tool in manifest["tools"]} == {
+            "veh_set_data_breakpoint", "veh_search_memory", "veh_read_memory",
+        }
+        assert all(tool["schema_handle"].startswith("veh_") for tool in manifest["tools"])
+        manifest_unchanged = client.tool("veh_toolbox", {
+            "operation": "manifest",
+            "tools": ["veh_set_data_breakpoint", "veh_search_memory", "veh_read_memory"],
+            "manifest_handle": manifest["manifest_handle"],
+        })
+        assert manifest_unchanged == {
+            "manifest_handle": manifest["manifest_handle"], "count": 3, "unchanged": True,
+        }
+        full_descriptions = client.tool("veh_toolbox", {
+            "operation": "manifest",
+            "tools": ["veh_set_data_breakpoint", "veh_search_memory", "veh_read_memory"],
+            "compact": False,
+            "manifest_handle": manifest["manifest_handle"],
+        })
+        assert full_descriptions["manifest_handle"] != manifest["manifest_handle"]
+        assert "tools" in full_descriptions and full_descriptions.get("unchanged") is None
+
         called = client.tool("veh_toolbox", {
             "operation": "call", "tool": "veh_modules", "arguments": {},
         })

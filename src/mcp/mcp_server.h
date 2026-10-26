@@ -156,7 +156,7 @@ private:
 	json DispatchTool(const std::string& name, const json& args, bool* known = nullptr);
 	// Tool runner for batch steps, targeted-capture setup, and breakpoint actions
 	json RunNestedTool(const std::string& name, const json& args);
-	BatchExecutor NewBatchExecutor();
+		BatchExecutor NewBatchExecutor(bool allowSessionStart = false);
 
 	// IPC event handler (breakpoint hit, etc.)
 	void OnIpcEvent(uint32_t eventId, const uint8_t* payload, uint32_t size);

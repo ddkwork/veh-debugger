@@ -44,13 +44,14 @@ the active eager inventory; counts are not fixed documentation contracts.
 
 ```json
 {"operation":"list","query":"checkpoint"}
+{"operation":"manifest","tools":["veh_pause","veh_set_data_breakpoint","veh_search_memory","veh_read_memory"]}
 {"operation":"describe","tool":"veh_checkpoint_create"}
 {"operation":"call","tool":"veh_checkpoint_create","arguments":{"threadId":1234}}
 ```
 
-Reuse the returned `schema_handle` in a later `describe`; an unchanged schema returns only the name, handle, and `unchanged:true`. Tools remain directly callable by name even when they are not in the active `tools/list`, preserving existing scenario, analyzer, and batch automation. `veh_toolbox` is control-plane discovery and deliberately cannot call itself or be nested in `veh_batch`/breakpoint actions.
+Prefer one `manifest` request when a workflow needs several hidden tools. It returns each complete input schema with a per-tool handle and one `manifest_handle`; repeating the same request with that handle returns only the handle, count, and `unchanged:true`. `compact` defaults to one-sentence descriptions without reducing input schemas. A manifest is limited to 64 exact names or filtered profile/query matches. Reuse the returned `schema_handle` for individual `describe` requests. Tools remain directly callable by name even when they are not in the active `tools/list`, preserving existing scenario, analyzer, and batch automation. `veh_toolbox` is control-plane discovery and deliberately cannot call itself or be nested in `veh_batch`/breakpoint actions.
 
-Batch steps, targeted-capture setup steps, and breakpoint actions call the same tool implementations as direct MCP calls. Session lifecycle tools (`veh_attach`, `veh_launch`, `veh_detach`, `veh_terminate`), re-entrant orchestrators (`veh_batch`, `veh_targeted_capture`, `veh_toolbox`) and VM-wide `veh_virtual_machine` are rejected in those nested contexts; the tool table's `nested` flag defines the policy.
+Batch steps, targeted-capture setup steps, and breakpoint actions call the same tool implementations as direct MCP calls. With no active session, `veh_batch` alone may use exactly one top-level `veh_launch` or `veh_attach` as its first step, then continue with ordinary analysis steps in the same request. Session start is rejected for an active session, input matrices, loops and other nested blocks; `veh_detach`/`veh_terminate` remain unavailable. Targeted capture and breakpoint actions still reject every lifecycle tool. Re-entrant orchestrators (`veh_batch`, `veh_targeted_capture`, `veh_toolbox`) and VM-wide `veh_virtual_machine` are rejected in all nested contexts.
 
 `LimitReached` adds a backend result status, not a tool or input field, so it needs
 no eager-profile or gateway-schema expansion. Direct breakpoint failures and
@@ -143,8 +144,22 @@ For handler-focused work, `target_window={address,occurrence,before_steps,after_
 
 `veh_batch` accepts optional `inputs` (1-256), binds each item to `input_variable` (default `$input`), and runs the same steps sequentially in one debug session. `stop_on_error` stops the current execution and remaining inputs after the first failed step. Reports retain existing `results`/step data and add per-input index, status, steps, success/failure counts, first failure, trace summaries, artifact metadata, and top-level totals. No implicit checkpoint restore occurs between inputs; include explicit checkpoint steps when isolation is required.
 
+To start and inspect a target in one round trip, put `veh_launch` (or `veh_attach`) in the first top-level step. This is only valid when no session is active and cannot be combined with `inputs`; later and nested lifecycle operations remain rejected.
+
+```json
+{"steps":[{"tool":"veh_launch","args":{"program":"sample.exe","stopOnEntry":true},"result_fields":["success","pid"]},{"tool":"veh_modules","args":{}}]}
+```
+
+Each step may set `result_fields` to 1-128 dotted paths such as `registers.rip` or `frames.0.address`. Only those fields are returned for that step, while `$N`, `$last`, named variables, conditions, nested steps, and breakpoint actions continue to use the complete internal result. Missing paths are reported under `_selection` instead of being silently invented.
+
+Set top-level `max_output_bytes` (1 KiB-64 MiB) to bound the complete serialized batch response. If the report is larger, the server writes the complete field-selected report to a generated non-overwriting JSON artifact and returns compact path/SHA-256/size/count plus `partial_reason="max_output_bytes"`. `artifact_directory` may select an existing MCP-host directory; otherwise a dedicated host temporary directory is created. The artifact is a response transport, not target state: memory searches, maps, traces, and other target work still execute through their backend IPC commands. Callers own artifact retention and cleanup.
+
 ```json
 {"steps":[{"tool":"veh_registers","args":{"threadId":1234,"fields":["rsp"]}},{"tool":"veh_read_memory","args":{"address":"$0.registers.rsp","size":8}}]}
+```
+
+```json
+{"max_output_bytes":8192,"steps":[{"tool":"veh_disassemble","args":{"address":"module+0x1000","count":500},"result_fields":["instructions","count"]}]}
 ```
 
 Use `$last` for loop results because absolute step indices change on each iteration:

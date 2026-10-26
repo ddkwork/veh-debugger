@@ -644,6 +644,28 @@ try{$pin=([BitConverter]::ToString($hash.ComputeHash($cert.RawData))).Replace('-
             assert client.tool("veh_detach").get("success"), "guest detach"
             passed("MCP guest metadata/threads and unsupported launch preserves session")
 
+            batch_marker = directory / "batch-launch.txt"
+            batch_release = directory / "batch-launch-release.txt"
+            batch_code = ("from pathlib import Path;import time;Path(" + repr(str(batch_marker)) +
+                          ").write_text('running');\nwhile not Path(" + repr(str(batch_release)) +
+                          ").exists():time.sleep(.02)")
+            batch_launch = client.tool("veh_batch", {"steps": [
+                {"tool": "veh_launch", "args": {"backend": "host", "program": sys.executable,
+                 "args": ["-c", batch_code], "stopOnEntry": False},
+                 "result_fields": ["success", "pid"]},
+                {"tool": "veh_threads", "args": {}, "result_fields": ["count"]},
+            ]}, timeout=25)
+            batch_started, batch_threads = [item["result"] for item in batch_launch["results"]]
+            assert batch_started.get("success") and batch_started.get("pid", 0) > 0, batch_launch
+            assert batch_threads.get("count") == 1, batch_threads
+            batch_target = owned_handle(batch_started["pid"], sys.executable, runner.pid, directory)
+            target_handles.append(batch_target)
+            wait_file(batch_marker)
+            assert client.tool("veh_detach").get("success"), "batch-launched host detach"
+            batch_release.write_text("exit", encoding="ascii")
+            assert KERNEL.WaitForSingleObject(batch_target, 5000) == 0
+            passed("one MCP batch launches through TCP and inspects the remote target")
+
             machine = client.tool("veh_attach", {"backend": "machine", "target_scope": "vm"}, timeout=25)
             assert machine.get("success") and machine["backend"]["targetScope"] == "vm", "VM attach"
             assert client.tool("veh_detach").get("success"), "VM detach"

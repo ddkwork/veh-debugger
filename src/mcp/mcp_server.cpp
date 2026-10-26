@@ -199,8 +199,8 @@ void McpServer::OnInitialize(const json& id, const json& params) {
 			{"name", "veh-debugger"},
 			{"version", "1.2.1"}
 		}},
-		{"instructions",
-			"Windows x86/x64 in-process debugger. The default lite profile keeps common session tools eager; use veh_toolbox to discover, describe, and call all other tools. veh_batch steps call most tools by name without describe. Inspection requires a stopped target."
+			{"instructions",
+				"Windows x86/x64 debugger. Lite exposes common session tools; use one veh_toolbox manifest for several schemas, or discover/describe/call others. veh_batch calls most tools by name. Inspection requires a stopped target."
 		}
 	};
 	SendResult(id, result);
@@ -1718,16 +1718,16 @@ std::vector<McpServer::ToolDef> McpServer::BuildAllToolsList() {
 
 		Tool(&McpServer::ToolBatch, "orchestration", kLite | kCapture, false,
 			{{"name", "veh_batch"}, {"description",
-			"Execute sequential debugger steps, conditions, loops, or input matrices in one call. "
-			"Use $N/$last/$prev references between results and args.fields to bound register output. "
-			"Detailed examples are in docs/DEVELOPMENT_TOOLS.md."
+			"Batch debugger steps. First step may launch/attach if unattached; $refs use full results while result_fields/max_output_bytes bound output."
 		},
 		 {"inputSchema", {{"type", "object"}, {"properties", {
-			{"steps", {{"type", "array"}, {"items", {{"oneOf", json::array({json{{"type", "object"}}, json{{"type", "string"}}})}}}, {"description", "Array of step objects, or JSON-encoded object strings for compatibility. Each decoded step is {tool, args}, {if, then, else}, {loop, until, max}, or {for_each, as, do}."}}},
+			{"steps", {{"type", "array"}, {"items", {{"oneOf", json::array({json{{"type", "object"}}, json{{"type", "string"}}})}}}, {"description", "Step objects/JSON strings; result_fields projects dotted paths."}}},
 			{"file", {{"type", "string"}, {"description", "Load steps from a JSON file instead of inline. File can be a JSON array of steps or {\"steps\": [...]}. Example: veh_batch({file: \"patch_sequence.json\"})"}}},
-			{"inputs", {{"type", "array"}, {"maxItems", 256}, {"description", "Repeat the steps once per input object/value in the same debug session"}}},
-			{"input_variable", {{"type", "string"}, {"description", "Variable bound to each input (default $input)"}}},
-			{"stop_on_error", {{"type", "boolean"}, {"description", "Stop the current batch and any remaining input runs after the first failed step (default false)"}}}
+			{"inputs", {{"type", "array"}, {"maxItems", 256}, {"description", "Repeat steps for 1-256 inputs"}}},
+			{"input_variable", {{"type", "string"}, {"description", "Input variable (default $input)"}}},
+			{"stop_on_error", {{"type", "boolean"}, {"description", "Stop after the first failed step"}}},
+			{"max_output_bytes", {{"type", "integer"}, {"minimum", 1024}, {"maximum", 67108864}, {"description", "Spill oversized report to JSON artifact"}}},
+			{"artifact_directory", {{"type", "string"}, {"description", "Artifact directory (default: host temp)"}}}
 		 }}}}}),
 
 		Tool(&McpServer::ToolTraceRegister, "trace", 0, true,
@@ -1788,14 +1788,17 @@ std::vector<McpServer::ToolDef> McpServer::BuildAllToolsList() {
 			{"required", json::array({"inputs", "trace", "trigger", "window", "output_directory"})}}}}));
 	tools.push_back(Tool(&McpServer::ToolToolbox, "orchestration", kLite | kInteractive | kCapture, false,
 			{{"name", "veh_toolbox"},
-		{"description", "Discover, describe, or call VEH tools that are not eager in the active profile. Describe before calling and reuse schema_handle when possible."},
+		{"description", "Discover hidden tools; manifest returns several schemas."},
 		{"inputSchema", {{"type", "object"}, {"properties", {
-			{"operation", {{"type", "string"}, {"enum", json::array({"list", "describe", "call", "profiles"})}, {"description", "Operation (default: list)"}}},
+			{"operation", {{"type", "string"}, {"enum", json::array({"list", "manifest", "describe", "call", "profiles"})}, {"description", "Operation (default: list)"}}},
 			{"tool", {{"type", "string"}, {"description", "Tool name for describe or call"}}},
+			{"tools", {{"type", "array"}, {"minItems", 1}, {"maxItems", 64}, {"items", {{"type", "string"}}}, {"description", "Manifest tool names"}}},
 			{"arguments", {{"type", "object"}, {"description", "Arguments for call"}}},
 			{"profile", {{"type", "string"}, {"enum", json::array({"lite", "interactive", "capture", "full"})}, {"description", "Filter list by profile"}}},
 			{"query", {{"type", "string"}, {"description", "Case-insensitive list filter"}}},
-			{"schema_handle", {{"type", "string"}, {"description", "Handle from an earlier describe"}}}
+			{"compact", {{"type", "boolean"}, {"description", "Compact manifest descriptions (default true)"}}},
+			{"schema_handle", {{"type", "string"}, {"description", "Handle from an earlier describe"}}},
+			{"manifest_handle", {{"type", "string"}}}
 		}}}}}));
 	return tools;
 }
@@ -1841,8 +1844,10 @@ json McpServer::RunNestedTool(const std::string& name, const json& args) {
 	return DispatchTool(name, args);
 }
 
-BatchExecutor McpServer::NewBatchExecutor() {
-	return BatchExecutor([this](const std::string& name, const json& args) {
+BatchExecutor McpServer::NewBatchExecutor(bool allowSessionStart) {
+	return BatchExecutor([this, allowSessionStart](const std::string& name, const json& args) {
+		if (allowSessionStart && (name == "veh_launch" || name == "veh_attach"))
+			return DispatchTool(name, args);
 		return RunNestedTool(name, args);
 	});
 }

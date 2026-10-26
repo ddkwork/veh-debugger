@@ -2,6 +2,7 @@
 #include "tools_common.h"
 #include "batch_executor.h"
 #include "trace_basic_blocks_tool.h"
+#include "trace_output_file.h"
 #include "assembler.h"
 #include "adapter/disassembler.h"
 #include "common/logger.h"
@@ -11,15 +12,99 @@
 #include <cstring>
 #include <filesystem>
 #include <limits>
+#include <set>
 #include <stdexcept>
 #include <wincrypt.h>
 #pragma comment(lib, "advapi32.lib")
 
 namespace veh {
 
-json McpServer::ToolBatch(const json& args) {
-	if (!session_.IsAttached()) return {{"error", NotAttachedMessage()}};
+struct BatchSessionOperation {
+	std::string name;
+	size_t topIndex = 0;
+	unsigned depth = 0;
+};
 
+static void CollectBatchSessionOperations(const json& steps, unsigned depth,
+		std::vector<BatchSessionOperation>& operations, size_t inheritedTop = 0) {
+	if (!steps.is_array()) return;
+	for (size_t index = 0; index < steps.size(); ++index) {
+		json decoded;
+		const json* step = &steps[index];
+		if (step->is_string()) {
+			try { decoded = json::parse(step->get<std::string>()); step = &decoded; }
+			catch (...) { continue; }
+		}
+		if (!step->is_object()) continue;
+		const size_t topIndex = depth == 0 ? index : inheritedTop;
+		if (step->contains("tool") && (*step)["tool"].is_string()) {
+			const std::string name = (*step)["tool"].get<std::string>();
+			if (name == "veh_attach" || name == "veh_launch" ||
+				name == "veh_detach" || name == "veh_terminate")
+				operations.push_back({name, topIndex, depth});
+		}
+		for (const char* child : {"then", "else", "loop", "do"})
+			if (step->contains(child))
+				CollectBatchSessionOperations((*step)[child], depth + 1, operations, topIndex);
+	}
+}
+
+static size_t BatchReportCount(const json& report) {
+	if (report.value("mode", "") == "inputs" && report.contains("inputs") && report["inputs"].is_array())
+		return report["inputs"].size();
+	return report.value("totalSteps", static_cast<size_t>(0));
+}
+
+static bool BatchOutputLimit(const json& args, uint64_t& limit, std::string& error) {
+	limit = 0;
+	if (!args.contains("max_output_bytes")) return true;
+	if (!args["max_output_bytes"].is_number_integer()) {
+		error = "max_output_bytes must be an integer from 1024 through 67108864"; return false;
+	}
+	try {
+		if (args["max_output_bytes"].is_number_unsigned())
+			limit = args["max_output_bytes"].get<uint64_t>();
+		else {
+			const int64_t signedLimit = args["max_output_bytes"].get<int64_t>();
+			if (signedLimit < 0) { error = "max_output_bytes must be an integer from 1024 through 67108864"; return false; }
+			limit = static_cast<uint64_t>(signedLimit);
+		}
+	} catch (...) {
+		error = "max_output_bytes must be an integer from 1024 through 67108864"; return false;
+	}
+	if (limit < 1024 || limit > 64ULL * 1024 * 1024) {
+		error = "max_output_bytes must be an integer from 1024 through 67108864"; return false;
+	}
+	return true;
+}
+
+static json ApplyBatchOutputBudget(json report, const json& args) {
+	if (!args.contains("max_output_bytes")) return report;
+	uint64_t requested = 0;
+	std::string error;
+	if (!BatchOutputLimit(args, requested, error)) return {{"error", error}};
+	const std::string serialized = report.dump();
+	if (serialized.size() <= requested) return report;
+
+	const size_t count = BatchReportCount(report);
+	auto written = WriteJsonArtifactInDirectory(args.value("artifact_directory", ""),
+		"veh-batch-result", report);
+	json compact = {
+		{"partial", true}, {"truncated", true}, {"partial_reason", "max_output_bytes"},
+		{"max_output_bytes", requested}, {"original_bytes", serialized.size()}, {"count", count}
+	};
+	for (const char* key : {"mode", "input_variable", "totalSteps", "succeeded", "failed",
+		"first_failed_step", "first_failed_input", "stopped_on_error"})
+		if (report.contains(key)) compact[key] = report[key];
+	if (written.success) compact["artifact"] = {
+		{"path", written.path}, {"format", written.format}, {"sha256", written.sha256},
+		{"size", written.size}, {"count", count}, {"complete", true}, {"truncated", false}
+	};
+	else compact["artifact"] = {{"complete", false}, {"error", written.error}};
+	return compact;
+}
+
+json McpServer::ToolBatch(const json& args) {
 	json steps;
 
 	// File mode: load steps from JSON file
@@ -61,17 +146,46 @@ json McpServer::ToolBatch(const json& args) {
 	if (!steps.is_array() || steps.empty()) {
 		return {{"error", "steps (array) is required, or provide file path"}};
 	}
+	std::vector<BatchSessionOperation> sessionOperations;
+	CollectBatchSessionOperations(steps, 0, sessionOperations);
+	if (!sessionOperations.empty()) {
+		if (sessionOperations.size() != 1 || sessionOperations[0].topIndex != 0 ||
+			sessionOperations[0].depth != 0 ||
+			(sessionOperations[0].name != "veh_launch" && sessionOperations[0].name != "veh_attach"))
+			return {{"error", "Only one top-level first-step veh_launch or veh_attach is allowed; detach/terminate and nested session operations remain unavailable"}};
+		if (session_.IsAttached())
+			return {{"error", "veh_launch/veh_attach can start a batch only when no session is attached"}};
+		if (args.contains("inputs"))
+			return {{"error", "veh_launch/veh_attach cannot be repeated with batch inputs"}};
+	} else if (!session_.IsAttached()) return {{"error", NotAttachedMessage()}};
 	if (args.contains("stop_on_error") && !args["stop_on_error"].is_boolean())
 		return {{"error", "stop_on_error must be a boolean"}};
+	uint64_t outputLimit = 0;
+	std::string outputError;
+	if (!BatchOutputLimit(args, outputLimit, outputError)) return {{"error", outputError}};
+	(void)outputLimit;
+	if (args.contains("artifact_directory")) {
+		if (!args["artifact_directory"].is_string()) return {{"error", "artifact_directory must be a string"}};
+		if (args["artifact_directory"].get<std::string>().empty())
+			return {{"error", "artifact_directory must not be empty; omit it to use the host temporary directory"}};
+		try {
+			const auto directory = std::filesystem::absolute(
+				std::filesystem::u8path(args["artifact_directory"].get<std::string>()));
+			if (!std::filesystem::exists(directory) || !std::filesystem::is_directory(directory))
+				return {{"error", "artifact_directory does not exist or is not a directory"}};
+		} catch (const std::exception& error) {
+			return {{"error", std::string("invalid artifact_directory: ") + error.what()}};
+		}
+	}
 	const bool stopOnError = args.value("stop_on_error", false);
 
 	auto run = [&](const json* input, const std::string& inputVariable) {
-		BatchExecutor executor = NewBatchExecutor();
+		BatchExecutor executor = NewBatchExecutor(!sessionOperations.empty());
 		executor.SetStopOnError(stopOnError);
 		if (input) executor.SetVariable(inputVariable, *input);
 		return executor.Execute(steps);
 	};
-	if (!args.contains("inputs")) return run(nullptr, "");
+	if (!args.contains("inputs")) return ApplyBatchOutputBudget(run(nullptr, ""), args);
 	if (!args["inputs"].is_array() || args["inputs"].empty() || args["inputs"].size() > 256)
 		return {{"error", "inputs must be an array with 1-256 items"}};
 	if (args.contains("input_variable") && !args["input_variable"].is_string())
@@ -99,10 +213,10 @@ json McpServer::ToolBatch(const json& args) {
 			if (stopOnError) break;
 		} else ++succeeded;
 	}
-	return {{"mode", "inputs"}, {"input_variable", inputVariable},
+	return ApplyBatchOutputBudget({{"mode", "inputs"}, {"input_variable", inputVariable},
 		{"inputs", std::move(inputReports)}, {"succeeded", succeeded}, {"failed", failed},
 		{"first_failed_input", firstFailedInput < 0 ? json(nullptr) : json(firstFailedInput)},
-		{"stopped_on_error", stopOnError && failed != 0}};
+		{"stopped_on_error", stopOnError && failed != 0}}, args);
 }
 
 static std::string CompactToolSummary(const std::string& description) {
@@ -156,6 +270,60 @@ json McpServer::ToolToolbox(const json& args) {
 		return {{"active_profile", toolProfile_}, {"filter_profile", profile},
 			{"count", matches.size()}, {"tools", std::move(matches)}};
 	}
+	if (operation == "manifest") {
+		if (args.contains("compact") && !args["compact"].is_boolean())
+			return {{"error", "compact must be a boolean"}};
+		const bool compact = args.value("compact", true);
+		std::vector<const ToolDef*> selected;
+		std::set<std::string> seen;
+		if (args.contains("tools")) {
+			if (!args["tools"].is_array() || args["tools"].empty() || args["tools"].size() > 64)
+				return {{"error", "tools must be an array with 1-64 tool names"}};
+			for (const auto& value : args["tools"]) {
+				if (!value.is_string()) return {{"error", "tools must contain only tool names"}};
+				const std::string name = value.get<std::string>();
+				const ToolDef* tool = FindTool(name);
+				if (!tool) return {{"error", "Unknown tool: " + name}};
+				if (seen.insert(name).second) selected.push_back(tool);
+			}
+		} else {
+			const std::string profile = args.value("profile", "full");
+			const unsigned mask = ProfileMask(profile);
+			if (!mask) return {{"error", "profile must be lite, interactive, capture, or full"}};
+			std::string query = args.value("query", "");
+			std::transform(query.begin(), query.end(), query.begin(),
+				[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+			for (const auto& tool : tools_) {
+				if (!tool.InProfile(mask)) continue;
+				const std::string summary = CompactToolSummary(tool.definition.value("description", ""));
+				std::string haystack = tool.name + " " + summary + " " + tool.category;
+				std::transform(haystack.begin(), haystack.end(), haystack.begin(),
+					[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+				if (!query.empty() && haystack.find(query) == std::string::npos) continue;
+				selected.push_back(&tool);
+				if (selected.size() > 64)
+					return {{"error", "manifest matches more than 64 tools; narrow query or pass tools"}};
+			}
+		}
+
+		json schemaHandles = json::array();
+		for (const ToolDef* tool : selected)
+			schemaHandles.push_back({{"name", tool->name}, {"schema_handle", ToolSchemaHandle(tool->definition)}});
+		json handleInput = {{"compact", compact}, {"tools", std::move(schemaHandles)}};
+		const std::string manifestHandle = ToolSchemaHandle(handleInput);
+		if (args.value("manifest_handle", "") == manifestHandle)
+			return {{"manifest_handle", manifestHandle}, {"count", selected.size()}, {"unchanged", true}};
+		json definitions = json::array();
+		for (const ToolDef* tool : selected) {
+			const std::string description = tool->definition.value("description", "");
+			definitions.push_back({{"name", tool->name}, {"category", tool->category},
+				{"schema_handle", ToolSchemaHandle(tool->definition)},
+				{"description", compact ? CompactToolSummary(description) : description},
+				{"inputSchema", tool->definition.value("inputSchema", json::object())}});
+		}
+		return {{"active_profile", toolProfile_}, {"manifest_handle", manifestHandle},
+			{"count", definitions.size()}, {"tools", std::move(definitions)}};
+	}
 
 	const std::string name = args.value("tool", "");
 	if (name.empty()) return {{"error", "tool is required for describe or call"}};
@@ -181,7 +349,7 @@ json McpServer::ToolToolbox(const json& args) {
 		wrapped["result"] = std::move(result);
 		return wrapped;
 	}
-	return {{"error", "operation must be list, describe, call, or profiles"}};
+	return {{"error", "operation must be list, manifest, describe, call, or profiles"}};
 }
 
 } // namespace veh

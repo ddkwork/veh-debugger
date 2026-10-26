@@ -579,6 +579,7 @@ def test_batch_breakpoint_action_and_string_steps():
         "tool": "veh_set_breakpoint",
         "args": {"address": work, "action": [{
             "tool": "veh_set_breakpoint", "args": {"address": sleep_ex},
+            "result_fields": ["success", "id"],
         }]},
     }]}))
     outer = batch["results"][0]["result"]

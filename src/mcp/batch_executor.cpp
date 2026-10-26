@@ -1,5 +1,7 @@
 #include "batch_executor.h"
+#include <algorithm>
 #include <cstdio>
+#include <cctype>
 
 namespace veh {
 
@@ -66,6 +68,90 @@ static void CollectBatchTraceMetadata(const json& value, json& summaries, json& 
 	}
 }
 
+static bool ParseResultFieldPath(const std::string& path, std::vector<std::string>& parts) {
+	if (path.empty()) return false;
+	std::string current;
+	for (char value : path) {
+		if (value == '.') {
+			if (current.empty()) return false;
+			parts.push_back(std::move(current));
+			current.clear();
+		} else current.push_back(value);
+	}
+	if (current.empty()) return false;
+	parts.push_back(std::move(current));
+	return true;
+}
+
+static bool ArrayIndex(const std::string& value, size_t& index) {
+	if (value.empty() || !std::all_of(value.begin(), value.end(),
+		[](unsigned char c) { return std::isdigit(c) != 0; })) return false;
+	try { index = std::stoull(value); return true; }
+	catch (...) { return false; }
+}
+
+static const json* FindResultField(const json& value, const std::vector<std::string>& parts) {
+	const json* current = &value;
+	for (const auto& part : parts) {
+		if (current->is_object()) {
+			auto found = current->find(part);
+			if (found == current->end()) return nullptr;
+			current = &*found;
+		} else if (current->is_array()) {
+			size_t index = 0;
+			if (!ArrayIndex(part, index) || index >= current->size()) return nullptr;
+			current = &(*current)[index];
+		} else return nullptr;
+	}
+	return current;
+}
+
+static void SetResultField(json& output, const std::vector<std::string>& parts,
+		size_t offset, const json& value) {
+	if (offset == parts.size()) { output = value; return; }
+	size_t index = 0;
+	if (ArrayIndex(parts[offset], index)) {
+		if (!output.is_array()) output = json::array();
+		while (output.size() <= index) output.push_back(nullptr);
+		SetResultField(output[index], parts, offset + 1, value);
+	} else {
+		if (!output.is_object()) output = json::object();
+		SetResultField(output[parts[offset]], parts, offset + 1, value);
+	}
+}
+
+static const json* DecodedStep(const json& step, json& decoded) {
+	if (step.is_object()) return &step;
+	if (!step.is_string()) return nullptr;
+	try {
+		decoded = json::parse(step.get<std::string>());
+		return decoded.is_object() ? &decoded : nullptr;
+	} catch (...) { return nullptr; }
+}
+
+static json ProjectBatchResult(const json& step, const json& result) {
+	json decoded;
+	const json* object = DecodedStep(step, decoded);
+	if (!object || !object->contains("result_fields")) return result;
+	const auto& fields = (*object)["result_fields"];
+	if (!fields.is_array() || fields.empty() || fields.size() > 128) return result;
+	json projected = json::object(), missing = json::array();
+	for (const auto& field : fields) {
+		if (!field.is_string()) return result;
+		std::vector<std::string> parts;
+		const std::string path = field.get<std::string>();
+		if (!ParseResultFieldPath(path, parts)) return result;
+		const json* selected = FindResultField(result, parts);
+		if (selected) SetResultField(projected, parts, 0, *selected);
+		else missing.push_back(path);
+	}
+	if (!missing.empty()) projected["_selection"] = {
+		{"partial", true}, {"reason", "missing_result_fields"}, {"missing", std::move(missing)}};
+	if (result.is_object() && result.contains("error") && !projected.contains("error"))
+		projected["error"] = result["error"];
+	return projected;
+}
+
 void BatchExecutor::SetVariable(const std::string& name, const json& value) {
 	namedVars_[name.empty() || name[0] == '$' ? name : "$" + name] = value;
 }
@@ -88,7 +174,8 @@ json BatchExecutor::Execute(const json& steps) {
 			json result = ExecuteStep(steps[i]);
 			results_.push_back(result);
 			bool stepFailed = BatchResultFailed(result);
-			allResults.push_back({{"step", i}, {"status", stepFailed ? "failed" : "ok"}, {"result", result}});
+			allResults.push_back({{"step", i}, {"status", stepFailed ? "failed" : "ok"},
+				{"result", ProjectBatchResult(steps[i], result)}});
 			if (stepFailed) { ++failed; if (firstFailedStep < 0) firstFailedStep = static_cast<int64_t>(i); }
 			else ++succeeded;
 
@@ -138,6 +225,16 @@ json BatchExecutor::ExecuteStep(const json& step) {
 	}
 	if (!step.is_object()) {
 		return {{"error", "Step must be an object or a JSON-encoded object string"}};
+	}
+	if (step.contains("result_fields")) {
+		const auto& fields = step["result_fields"];
+		if (!fields.is_array() || fields.empty() || fields.size() > 128 ||
+			!std::all_of(fields.begin(), fields.end(), [](const json& field) {
+				if (!field.is_string()) return false;
+				std::vector<std::string> parts;
+				return ParseResultFieldPath(field.get<std::string>(), parts);
+			}))
+			return {{"error", "result_fields must contain 1-128 non-empty dotted field paths"}};
 	}
 
 	// Control flow: if
