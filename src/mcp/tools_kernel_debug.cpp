@@ -118,6 +118,10 @@ json McpServer::ToolKdConnect(const json& args)
 		return {{"error", error}};
 	kd_ = std::move(client);
 	kd_breakpoints_.clear();
+	// VirtualBox 7.2's stub mis-sizes the P value (RTStrConvertHexBytes gets
+	// the digit count as the byte count), sends no reply and drops the link;
+	// it has no G. Its DBGC console's 'r' prints rip= and sets registers.
+	kd_dbgc_ = MonitorText(*kd_, "r").find("rip=") != std::string::npos;
 	std::string threads, more;
 	kd_->Request("qfThreadInfo", &threads);
 	json cpus = json::array();
@@ -268,6 +272,19 @@ json McpServer::ToolKdSetRegister(const json& args)
 	}
 	if (number < 0)
 		return {{"error", "unknown register (rax..r15, rip, rflags)"}};
+	if (kd_dbgc_) {
+		char command[64];
+		snprintf(command, sizeof(command), "r %s = 0x%llx", name == "eflags" ? "rflags" : name.c_str(),
+			static_cast<unsigned long long>(value));
+		const std::string text = MonitorText(*kd_, command);
+		std::string reply;
+		char read[8];
+		snprintf(read, sizeof(read), "p%x", number);
+		const auto now = kd_->Request(read, &reply) ? FromHex(reply) : std::vector<uint8_t>{};
+		if (now.size() < size || Le(now, 0, size) != (size == 4 ? (value & 0xFFFFFFFFu) : value))
+			return {{"error", "register write failed"}, {"console", text}};
+		return {{"success", true}, {"name", name}, {"value", HexAddr(value)}};
+	}
 	std::vector<uint8_t> bytes(size);
 	for (size_t i = 0; i < size; ++i)
 		bytes[i] = static_cast<uint8_t>(value >> (8 * i));

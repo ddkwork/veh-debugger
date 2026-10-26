@@ -183,6 +183,7 @@ private:
 	DebugSession session_;
 	std::unique_ptr<KernelDebugClient> kd_;
 	std::set<uint64_t> kd_breakpoints_;
+	bool kd_dbgc_ = false; // VirtualBox's DBGC stub: registers are written through its console
 	std::string toolProfile_;
 	const std::vector<ToolDef> tools_ = BuildAllToolsList();
 	std::atomic<bool> running_{false};
