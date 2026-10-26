@@ -298,6 +298,8 @@ std::unique_ptr<KdTransport> OpenKdTransport(const std::string& kind, const std:
 
 void KernelDebugClient::Trace(char dir, const char* data, size_t n)
 {
+	if (!n)
+		return;
 	trace_ += dir;
 	for (size_t i = 0; i < n; ++i)
 		trace_ += (data[i] >= 0x20 && data[i] < 0x7F) ? data[i] : '.';
@@ -480,18 +482,20 @@ bool KernelDebugClient::Interrupt(std::string* stop, uint32_t timeout_ms)
 	// was ignored while the target ran (RIP kept moving); "vCont;t", which the
 	// stub advertises (vContSupported+), halted it with a stop reply within
 	// 30 ms. Other stubs get the interrupt byte after a second.
+	// Live (kd_x64, run 224301; the stub's link trace): vCont;t sent a few ms
+	// after 'c' was acknowledged and ignored. The stub checks "halted" before
+	// halting and the resume had not taken effect yet, so it did nothing and
+	// the target then ran. vCont;t is repeated each second (a halted stub
+	// ignores it), alternating with the interrupt byte for other stubs.
 	const auto deadline = GetTickCount64() + timeout_ms;
-	if (!Send("vCont;t"))
-		return false;
-	if (WaitStop(stop, static_cast<uint32_t>(std::min<uint64_t>(timeout_ms, 1000))))
-		return true;
-	for (;;) {
-		if (!transport_->Write("\x03", 1))
+	for (unsigned attempt = 0;; ++attempt) {
+		const bool sent = (attempt & 1) ? transport_->Write("\x03", 1) : Send("vCont;t");
+		if (!sent)
 			return false;
 		const auto now = GetTickCount64();
 		if (now >= deadline)
 			return false;
-		const auto slice = static_cast<uint32_t>(std::min<uint64_t>(deadline - now, 1000));
+		const auto slice = static_cast<uint32_t>(std::min<uint64_t>(deadline - now, attempt ? 1000 : 300));
 		if (WaitStop(stop, slice))
 			return true;
 	}
