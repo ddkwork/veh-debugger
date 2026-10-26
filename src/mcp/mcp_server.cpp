@@ -905,7 +905,11 @@ void McpServer::OnIpcEvent(uint32_t eventId, const uint8_t* payload, uint32_t si
 			std::lock_guard<std::mutex> lock(eventMutex_);
 			pendingEvents_.push({"notifications/logging", {{"level", "info"}, {"logger", "veh-debugger"}, {"data", "Target paused"}}}); SetEvent(eventsReady_);
 		}
-		session_.SignalStop("pause", 0, 0, 0);
+		// The paused thread, so a later Continue can tell the stop is over
+		// (live: a pause stop with thread 0 was returned as a current stop
+		// after the thread had been resumed).
+		const uint32_t tid = size >= sizeof(ThreadEvent) ? reinterpret_cast<const ThreadEvent*>(payload)->threadId : 0;
+		session_.SignalStop("pause", 0, tid, 0);
 		break;
 	}
 	case IpcEvent::ProcessExited: {
