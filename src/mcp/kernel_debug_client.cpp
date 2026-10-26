@@ -1,4 +1,5 @@
 #include "kernel_debug_client.h"
+#include <cctype>
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
@@ -343,9 +344,19 @@ bool KernelDebugClient::Request(const std::string& packet, std::string* reply, u
 		return r.size() > 1 && r[0] == 'O' && r != "OK" &&
 			r.find_first_not_of("0123456789abcdefABCDEF", 1) == std::string::npos;
 	};
-	for (int skipped = 0; console(*reply) && skipped < 4096; ++skipped)
+	// A stop reply answers only '?' and resumes; another one here is a late
+	// event (live: 'z0' after a breakpoint stop got "T05thread:01;").
+	const bool asks_stop = packet == "?";
+	const auto late_stop = [&](const std::string& r) {
+		return !asks_stop && r.size() >= 3 && (r[0] == 'T' || r[0] == 'S') &&
+			std::isxdigit(static_cast<unsigned char>(r[1])) && std::isxdigit(static_cast<unsigned char>(r[2]));
+	};
+	for (int skipped = 0; (console(*reply) || late_stop(*reply)) && skipped < 4096; ++skipped) {
+		if (late_stop(*reply))
+			last_stop_ = *reply;
 		if (!Receive(reply, timeout_ms))
 			return false;
+	}
 	return true;
 }
 
