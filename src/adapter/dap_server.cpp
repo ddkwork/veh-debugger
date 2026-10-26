@@ -449,6 +449,17 @@ void DapServer::OnInitialize(const Request& req) {
 }
 
 void DapServer::OnLaunch(const Request& req) {
+	if (req.arguments.value("targetScope", "host") != "host") {
+		// A guest process can only be attached: starting one inside the guest
+		// would need an in-guest agent, and the program path names no host file.
+		Response resp;
+		resp.request_seq = req.seq;
+		resp.command = "launch";
+		resp.success = false;
+		resp.message = "guest targets are attach-only: launch requires targetScope=host";
+		SendResponse(resp);
+		return;
+	}
 	programPath_ = req.arguments.value("program", "");
 	std::string cwd = req.arguments.value("cwd", "");
 	stopOnEntry_ = req.arguments.value("stopOnEntry", false);
