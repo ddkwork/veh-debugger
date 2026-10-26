@@ -328,7 +328,16 @@ void DapServer::HandleRequest(const Request& req) {
 			(req.command == "stepOut" && GuestSupports(IpcCommand::StepOut)) ||
 			((req.command == "stackTrace" || req.command == "scopes" || req.command == "variables") &&
 				GuestSupports(IpcCommand::GetRegisters)) ||
-			req.command == "exceptionInfo";
+			req.command == "exceptionInfo" ||
+			// Exception stops are reported by the guest backend; the filters are accepted.
+			(req.command == "setExceptionBreakpoints" && GuestSupports(IpcCommand::Continue)) ||
+			(req.command == "terminate" && GuestSupports(IpcCommand::Terminate)) ||
+			(req.command == "terminateThreads" && GuestSupports(IpcCommand::TerminateThread)) ||
+			((req.command == "evaluate" || req.command == "completions") && GuestSupports(IpcCommand::GetRegisters)) ||
+			(req.command == "setVariable" && GuestSupports(IpcCommand::SetRegister)) ||
+			(req.command == "modules" && GuestSupports(IpcCommand::GetModules)) ||
+			(req.command == "loadedSources" && GuestSupports(IpcCommand::Symbolize)) ||
+			((req.command == "goto" || req.command == "gotoTargets") && GuestSupports(IpcCommand::SetInstructionPointer));
 		if (!allowed) {
 			Response resp;
 			resp.request_seq = req.seq;
@@ -738,6 +747,18 @@ void DapServer::OnTerminate(const Request& req) {
 	resp.request_seq = req.seq;
 	resp.command = "terminate";
 	resp.success = true;
+	if (guestTarget_) {
+		// A guest PID names no host process: the backend ends the target
+		// itself (Ok only after it attested the exit).
+		TerminateRequest term{0};
+		std::vector<uint8_t> reply;
+		resp.success = ipcTransport_->SendAndReceive(IpcCommand::Terminate, &term, sizeof(term), reply) &&
+			reply.size() >= sizeof(IpcStatus) && *reinterpret_cast<const IpcStatus*>(reply.data()) == IpcStatus::Ok;
+		if (!resp.success) resp.message = "guest target termination failed";
+		SendResponse(resp);
+		if (resp.success && !terminated_.exchange(true)) SendEvent("terminated");
+		return;
+	}
 	SendResponse(resp);
 
 	if (targetPid_) {
@@ -2839,7 +2860,8 @@ void DapServer::OnTerminateThreads(const Request& req) {
 	Response resp;
 	resp.request_seq = req.seq;
 	resp.command = "terminateThreads";
-	resp.success = true;
+	resp.success = allOk;
+	if (!allOk) resp.message = "a thread was not terminated";
 	SendResponse(resp);
 }
 
