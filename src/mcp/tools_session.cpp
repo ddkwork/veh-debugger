@@ -396,7 +396,18 @@ json McpServer::ToolContinue(const json& args) {
 	// Check for cached stop event before sending Continue
 	if (wait && !passException) {
 		auto cached = session_.ConsumeCachedStop();
-		if (cached && IsCurrentStopEvent(*cached) && stillStopped(*cached)) {
+		// A breakpoint stop is current only while the thread is still at its
+		// address (live, guest backend: a duplicate hit event delivered after a
+		// trace moved the thread to the function's return made the next
+		// continue return at once without resuming).
+		const auto atStop = [this](const StopEvent& ev) {
+			if (ev.reason != "breakpoint" || !ev.threadId) return true;
+			const auto regs = session_.GetRegisters(ev.threadId);
+			if (!regs) return true;
+			const uint64_t rip = regs->is32bit ? (regs->rip & 0xFFFFFFFFull) : regs->rip;
+			return rip == ev.address;
+		};
+		if (cached && IsCurrentStopEvent(*cached) && stillStopped(*cached) && atStop(*cached)) {
 			json ret = {
 				{"stopped", true},
 				{"reason", cached->reason},
