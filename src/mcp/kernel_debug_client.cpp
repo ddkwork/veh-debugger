@@ -424,8 +424,19 @@ bool KernelDebugClient::WaitStop(std::string* stop, uint32_t timeout_ms)
 		*stop = last_stop_;
 		return true;
 	}
-	if (!Receive(stop, timeout_ms))
-		return false;
+	// Live (VirtualBox DBGC): the console announces the event as O<hex>
+	// packets ("dbgf event: Breakpoint ...") before the stop reply; taking
+	// one as the stop left the real T packet to answer the next request.
+	const auto deadline = GetTickCount64() + timeout_ms;
+	for (int skipped = 0; skipped < 4096; ++skipped) {
+		const auto now = GetTickCount64();
+		if (now >= deadline || !Receive(stop, static_cast<uint32_t>(deadline - now)))
+			return false;
+		const bool console = stop->size() > 1 && (*stop)[0] == 'O' && *stop != "OK" &&
+			stop->find_first_not_of("0123456789abcdefABCDEF", 1) == std::string::npos;
+		if (!console)
+			break;
+	}
 	running_ = false;
 	last_stop_ = *stop;
 	return true;
