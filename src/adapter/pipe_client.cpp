@@ -191,6 +191,7 @@ bool PipeClient::SendAndReceive(IpcCommand cmd,
 	std::vector<uint8_t>& response, int timeoutMs,
 	PipeExchangeDiagnostics* diagnostics)
 {
+	if (timeoutMs > 0 && timeoutMs < minimumTimeoutMs_) timeoutMs = minimumTimeoutMs_;
 	auto report = [&](PipeExchangeFailure failure, DWORD systemError = ERROR_SUCCESS,
 			uint32_t advertisedPayloadSize = 0) {
 		if (!diagnostics) return;

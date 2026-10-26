@@ -15,7 +15,10 @@ class PipeClient : public IIpcTransport {
 public:
 	// Empty = the VEH DLL pipe of the target; otherwise the exact pipe name an
 	// out-of-process backend was told to serve.
-	explicit PipeClient(std::wstring pipeName = {}) : pipeName_(std::move(pipeName)) {}
+	// minimumTimeoutMs: a floor for every exchange (a guest backend pauses the
+	// VM and runs guest-owned calls; its first command can take seconds).
+	explicit PipeClient(std::wstring pipeName = {}, int minimumTimeoutMs = 0)
+		: pipeName_(std::move(pipeName)), minimumTimeoutMs_(minimumTimeoutMs) {}
 	uint32_t PeerProcessId() const override;
 	~PipeClient() override { Disconnect(); }
 
@@ -56,6 +59,7 @@ protected:
 	virtual void CancelPendingIo();
 
 	std::wstring pipeName_;
+	int minimumTimeoutMs_ = 0;
 	HANDLE pipe_ = INVALID_HANDLE_VALUE;
 	HANDLE stopEvent_ = nullptr;
 	std::atomic<bool> connected_{false};

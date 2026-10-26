@@ -187,7 +187,7 @@ bool DapServer::AttachGuestAgent(const Request& req, std::string& error) {
 		return false;
 	}
 	CloseHandle(process.hThread);
-	ipcTransport_ = std::make_unique<PipeClient>(pipe);
+	ipcTransport_ = std::make_unique<PipeClient>(pipe, 30000);
 	auto abort = [&] {
 		ipcTransport_->Disconnect();
 		ipcTransport_ = std::make_unique<PipeClient>();
