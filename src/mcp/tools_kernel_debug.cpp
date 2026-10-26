@@ -331,7 +331,7 @@ json McpServer::ToolKdMemory(const json& args)
 		const size_t n = (std::min)(size - at, static_cast<size_t>(0x7F0));
 		char head[48];
 		snprintf(head, sizeof(head), "m%llx,%zx", static_cast<unsigned long long>(address + at), n);
-		if (!kd_->Request(head, &reply) || reply.empty() || reply[0] == 'E') {
+		if (!kd_->Request(head, &reply) || reply.empty() || (reply.size() == 3 && reply[0] == 'E')) {
 			if (data.empty())
 				return {{"error", "unreadable"}, {"address", HexAddr(address + at)}, {"reply", reply}};
 			break; // a readable prefix

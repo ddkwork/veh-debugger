@@ -93,7 +93,10 @@ DebugSession::~DebugSession() {
 
 void DebugSession::UseTransport(const std::wstring& pipeName) {
 	if (pipeName == transportPipe_ && !ipcTransport_->IsRemote()) return;
-	ipcTransport_ = std::make_unique<PipeClient>(pipeName);
+	// A guest backend's pipe (named) gets the DAP adapter's 30 s floor: it
+	// pauses the VM and runs guest-owned calls (live: a WoW64 stack walk with
+	// page fault-ins outlasted the 3 s default and returned no frames).
+	ipcTransport_ = std::make_unique<PipeClient>(pipeName, pipeName.empty() ? 0 : 30000);
 	transportPipe_ = pipeName;
 }
 
