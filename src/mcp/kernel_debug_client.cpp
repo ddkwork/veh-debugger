@@ -465,11 +465,15 @@ bool KernelDebugClient::Interrupt(std::string* stop, uint32_t timeout_ms)
 		*stop = last_stop_;
 		return true;
 	}
-	// VirtualBox's stub looks for the interrupt byte only between packets
-	// and drops the rest of a read that held a packet (live: a break right
-	// after 'c' never stopped). Repeat it each second: once halted, the stub
-	// ignores further interrupts.
+	// Live (tools/kd_stub_probe.ps1 against VirtualBox's stub): the 0x03 byte
+	// was ignored while the target ran (RIP kept moving); "vCont;t", which the
+	// stub advertises (vContSupported+), halted it with a stop reply within
+	// 30 ms. Other stubs get the interrupt byte after a second.
 	const auto deadline = GetTickCount64() + timeout_ms;
+	if (!Send("vCont;t"))
+		return false;
+	if (WaitStop(stop, static_cast<uint32_t>(std::min<uint64_t>(timeout_ms, 1000))))
+		return true;
 	for (;;) {
 		if (!transport_->Write("\x03", 1))
 			return false;
