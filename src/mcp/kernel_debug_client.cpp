@@ -334,7 +334,19 @@ bool KernelDebugClient::Receive(std::string* payload, uint32_t timeout_ms)
 
 bool KernelDebugClient::Request(const std::string& packet, std::string* reply, uint32_t timeout_ms)
 {
-	return Send(packet) && Receive(reply, timeout_ms);
+	if (!Send(packet) || !Receive(reply, timeout_ms))
+		return false;
+	// Live (VirtualBox DBGC): after a breakpoint stop the console prints the
+	// event as O<hex> packets, which then preceded the next reply ('z0' was
+	// answered "O30"). No reply of ours starts with 'O' except OK.
+	const auto console = [](const std::string& r) {
+		return r.size() > 1 && r[0] == 'O' && r != "OK" &&
+			r.find_first_not_of("0123456789abcdefABCDEF", 1) == std::string::npos;
+	};
+	for (int skipped = 0; console(*reply) && skipped < 4096; ++skipped)
+		if (!Receive(reply, timeout_ms))
+			return false;
+	return true;
 }
 
 bool KernelDebugClient::Monitor(const std::string& hex_command, std::string* hex_output, uint32_t timeout_ms)
