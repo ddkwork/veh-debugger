@@ -313,6 +313,12 @@ void DapServer::HandleRequest(const Request& req) {
 			// instruction steps (no guest symbols); frames come from registers.
 			(req.command == "setInstructionBreakpoints" && GuestSupports(IpcCommand::SetBreakpoint) &&
 				GuestSupports(IpcCommand::RemoveBreakpoint)) ||
+			// Host-side PDB symbols of the guest backend: source and function breakpoints.
+			(req.command == "setBreakpoints" && GuestSupports(IpcCommand::ResolveSourceLine) &&
+				GuestSupports(IpcCommand::SetBreakpoint) && GuestSupports(IpcCommand::RemoveBreakpoint)) ||
+			(req.command == "setFunctionBreakpoints" && GuestSupports(IpcCommand::ResolveFunction) &&
+				GuestSupports(IpcCommand::SetBreakpoint) && GuestSupports(IpcCommand::RemoveBreakpoint)) ||
+			(req.command == "source" && GuestSupports(IpcCommand::Symbolize)) ||
 			((req.command == "setDataBreakpoints" || req.command == "dataBreakpointInfo") &&
 				GuestSupports(IpcCommand::SetHwBreakpoint) && GuestSupports(IpcCommand::RemoveHwBreakpoint)) ||
 			(req.command == "continue" && GuestSupports(IpcCommand::Continue)) ||
