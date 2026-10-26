@@ -107,6 +107,8 @@ json McpServer::ToolKdConnect(const json& args)
 	const std::string address = args.value("address", "");
 	if (address.empty())
 		return {{"error", "address required (pipe name, COM port, host:port or ip:port)"}};
+	if (kd_)
+		(void)ToolKdDisconnect(json::object()); // its breakpoints out, then D
 	kd_.reset();
 	std::string error;
 	auto link = OpenKdTransport(transport, address, JsonUint32(args, "baud", 115200), &error);
@@ -152,6 +154,15 @@ json McpServer::ToolKdDisconnect(const json&)
 	if (kd_->running()) {
 		std::string stop;
 		kd_->Interrupt(&stop, 5000);
+	}
+	// The stub's detach keeps DBGF breakpoints: one hit with no debugger
+	// attached powers the VM off (DBGF waits for an attach, then EM stops).
+	// Remove ours first.
+	for (uint64_t a : kd_breakpoints_) {
+		std::string removed;
+		char packet[64];
+		snprintf(packet, sizeof(packet), "z0,%llx,1", static_cast<unsigned long long>(a));
+		(void)kd_->Request(packet, &removed);
 	}
 	const bool ok = kd_->Request("D", &reply) && reply == "OK";
 	kd_.reset();
