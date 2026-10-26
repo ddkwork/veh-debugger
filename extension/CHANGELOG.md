@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.2.1 - 2026-10-26
+
 ### Added
 - **Bounded MCP analysis transport** -- `veh_batch` can start an unattached session with one first-step launch/attach, then run analysis in the same request. Steps can return selected dotted result fields while retaining full values for later references. A total response-byte budget spills oversized reports to generated non-overwriting MCP-host JSON artifacts with path, SHA-256, size, count and explicit partial metadata. `veh_toolbox manifest` fetches and revalidates up to 64 workflow schemas in one call, reducing repeated discovery round trips.
 - **Structured backend startup diagnostics** -- an optional inherited pipe carries one fixed common error/detail record before IPC is ready. Remote startup failures show validated reasons alongside actual agent exit and OS codes, without mapping backend-specific exit numbers or forwarding logs. Existing agents retain numeric diagnostics.

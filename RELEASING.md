@@ -62,6 +62,11 @@ cmake --build build --config Release
 cmake --build build32 --config Release --target veh-debugger
 ```
 
+The release script uses `tools/run_tests.py` to select pytest for function-only
+suites and enforce per-file timeouts and process-tree cleanup. Batch/profile
+checks run on x64 and x86 alongside trace parity; a direct Python invocation of a
+pytest-only file does not execute its tests.
+
 Run the relevant DAP and MCP integration suites, including x64 and x86 coverage
 for architecture-sensitive changes. Test harnesses must enforce real timeouts and
 `finally` cleanup. Afterward, verify by executable path and full parent chain that

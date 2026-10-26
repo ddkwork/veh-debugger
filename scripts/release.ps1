@@ -240,6 +240,7 @@ function Invoke-ReleaseTests {
         'test/test_stepin.py',
         'test/test_bp_masking.py',
         'test/test_batch.py',
+        'test/test_batch_unified.py',
         'test/test_mcp_launch.py',
         'test/test_mcp_deep.py',
         'test/test_mcp_new_features.py',
@@ -251,8 +252,13 @@ function Invoke-ReleaseTests {
     )
     foreach ($test in $tests) {
         $name = [System.IO.Path]::GetFileNameWithoutExtension($test)
-        Invoke-Logged $name 'py' @('-3', $test)
+        # The shared runner detects pytest-only files and bounds each owned process tree.
+        Invoke-Logged $name 'py' @('-3', 'tools/run_tests.py', "$name.py", '--jobs', '1', '--timeout', '180')
     }
+    Invoke-Logged 'batch-profiles-x86' 'py' @(
+        '-3', 'tools/run_tests.py', 'test_batch_unified.py', 'test_mcp_profiles.py',
+        '--build-dir', 'build32', '--jobs', '1', '--timeout', '180'
+    )
     Invoke-Logged 'trace-parity-x64-x86' 'py' @(
         '-3', 'tools/run_trace_parity.py',
         '--build-dir', 'build',
