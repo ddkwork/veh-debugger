@@ -448,6 +448,17 @@ bool KernelDebugClient::WaitStop(std::string* stop, uint32_t timeout_ms)
 	return true;
 }
 
+bool KernelDebugClient::QueryStop(std::string* stop, uint32_t timeout_ms)
+{
+	std::string reply;
+	if (!Request("?", &reply, timeout_ms) || reply.size() < 3 || (reply[0] != 'T' && reply[0] != 'S'))
+		return false;
+	*stop = reply;
+	last_stop_ = reply;
+	running_ = false;
+	return true;
+}
+
 bool KernelDebugClient::Interrupt(std::string* stop, uint32_t timeout_ms)
 {
 	if (!running_) {

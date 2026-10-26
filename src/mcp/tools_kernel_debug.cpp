@@ -210,8 +210,17 @@ json McpServer::ToolKdStep(const json& args)
 			thread = ":" + stop.substr(t + 7, stop.find(';', t) - t - 7);
 	}
 	for (uint32_t i = 0; i < count; ++i) {
-		if (!kd_->Resume("vCont;s" + thread) || !kd_->WaitStop(&stop, JsonUint32(args, "timeout_ms", 10000)))
-			return {{"error", "step did not complete"}, {"steps", i}, {"diagnostic", kd_->wait_diagnostic()}};
+		const std::string before = ToolKdRegisters(json::object()).value("rip", "");
+		if (!kd_->Resume("vCont;s" + thread))
+			return {{"error", "link lost"}, {"steps", i}};
+		if (kd_->WaitStop(&stop, JsonUint32(args, "timeout_ms", 10000)))
+			continue;
+		// Live (VirtualBox DBGC, kd_x64 run 203425): the stub acknowledged the
+		// step but sent no stop reply. Ask for the stop reason; the step counts
+		// only if the target is halted at a new RIP.
+		const std::string diagnostic = kd_->wait_diagnostic();
+		if (!kd_->QueryStop(&stop, 3000) || ToolKdRegisters(json::object()).value("rip", "") == before)
+			return {{"error", "step did not complete"}, {"steps", i}, {"diagnostic", diagnostic}};
 	}
 	json regs = ToolKdRegisters(json::object());
 	json out = {{"steps", count}, {"stop", StopJson(stop)}, {"rip", regs.value("rip", "")}};

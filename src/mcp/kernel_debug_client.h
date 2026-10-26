@@ -38,6 +38,8 @@ public:
 	// Stop reply after Resume; false on timeout (the target keeps running).
 	bool WaitStop(std::string* stop, uint32_t timeout_ms);
 	bool Interrupt(std::string* stop, uint32_t timeout_ms); // 0x03
+	// '?' after a lost stop reply: true when the stub answers a stop reason.
+	bool QueryStop(std::string* stop, uint32_t timeout_ms);
 	bool running() const { return running_; }
 	const std::string& last_stop() const { return last_stop_; }
 	// Why the last WaitStop failed (the server's stderr is not kept).
