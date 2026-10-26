@@ -3,6 +3,7 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 
@@ -448,9 +449,21 @@ bool KernelDebugClient::Interrupt(std::string* stop, uint32_t timeout_ms)
 		*stop = last_stop_;
 		return true;
 	}
-	if (!transport_->Write("\x03", 1))
-		return false;
-	return WaitStop(stop, timeout_ms);
+	// VirtualBox's stub looks for the interrupt byte only between packets
+	// and drops the rest of a read that held a packet (live: a break right
+	// after 'c' never stopped). Repeat it each second: once halted, the stub
+	// ignores further interrupts.
+	const auto deadline = GetTickCount64() + timeout_ms;
+	for (;;) {
+		if (!transport_->Write("\x03", 1))
+			return false;
+		const auto now = GetTickCount64();
+		if (now >= deadline)
+			return false;
+		const auto slice = static_cast<uint32_t>(std::min<uint64_t>(deadline - now, 1000));
+		if (WaitStop(stop, slice))
+			return true;
+	}
 }
 
 } // namespace veh
