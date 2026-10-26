@@ -470,7 +470,10 @@ json McpServer::ToolTargetedCapture(const json& args) {
 
 		json checkpointArgs = environmentArgs;
 		checkpointArgs["threadId"] = traceArgs.value("threadId", json(0));
-		if (!checkpointArgs.contains("capture_teb")) checkpointArgs["capture_teb"] = true;
+		// A guest target's TEB is not known to the frontend (no host thread
+		// object): the default environment then holds registers and regions
+		// only; an explicit capture_teb=true still fails.
+		if (!checkpointArgs.contains("capture_teb")) checkpointArgs["capture_teb"] = !session_.IsGuestTarget();
 		json environment = ToolCheckpointCreate(checkpointArgs);
 		if (environment.contains("error")) {
 			report["status"] = "failed";

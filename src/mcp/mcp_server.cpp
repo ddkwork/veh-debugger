@@ -1783,7 +1783,7 @@ std::vector<McpServer::ToolDef> McpServer::BuildAllToolsList() {
 	targetedProperties["window"] = {{"type", "object"},
 		{"description", "{before_steps?, after_steps?}; bounds are 0/1 through 100000"}};
 	targetedProperties["environment"] = {{"type", "object"},
-		{"description", "Optional {capture_teb, teb_size, regions}; capture_teb defaults true"}};
+		{"description", "Optional {capture_teb, teb_size, regions}; capture_teb defaults true (false for a guest target, whose TEB the frontend does not know)"}};
 	targetedProperties["output_directory"] = {{"type", "string"},
 		{"description", "MCP-host artifact directory"}};
 	targetedProperties["stop_on_error"] = {{"type", "boolean"},
