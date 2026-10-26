@@ -30,6 +30,9 @@ public:
 	bool Handshake(std::string* stop, std::string* error);
 	// One request, one reply (empty reply = unsupported); false on timeout or a broken link.
 	bool Request(const std::string& packet, std::string* reply, uint32_t timeout_ms = 5000);
+	// qRcmd: the console output, collected from O packets until OK (or one
+	// hex reply from stubs that answer in a single packet).
+	bool Monitor(const std::string& hex_command, std::string* hex_output, uint32_t timeout_ms = 10000);
 	// Resume (c / vCont;s:N): no reply until the target stops again.
 	bool Resume(const std::string& packet);
 	// Stop reply after Resume; false on timeout (the target keeps running).

@@ -337,6 +337,31 @@ bool KernelDebugClient::Request(const std::string& packet, std::string* reply, u
 	return Send(packet) && Receive(reply, timeout_ms);
 }
 
+bool KernelDebugClient::Monitor(const std::string& hex_command, std::string* hex_output, uint32_t timeout_ms)
+{
+	hex_output->clear();
+	if (!Send("qRcmd," + hex_command))
+		return false;
+	// Live (VirtualBox DBGC): O<hex> packets, then OK; reading only the first
+	// left the rest in the stream and every later reply was a packet late.
+	for (int packets = 0; packets < 4096; ++packets) {
+		std::string reply;
+		if (!Receive(&reply, timeout_ms))
+			return false;
+		if (reply == "OK" || reply.empty())
+			return true;
+		if (reply[0] == 'E' && reply.size() == 3)
+			return false;
+		if (reply[0] == 'O') {
+			hex_output->append(reply, 1, std::string::npos);
+			continue;
+		}
+		hex_output->append(reply); // a stub answering with one hex packet
+		return true;
+	}
+	return false;
+}
+
 bool KernelDebugClient::Handshake(std::string* stop, std::string* error)
 {
 	std::string reply;

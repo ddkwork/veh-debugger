@@ -75,7 +75,7 @@ std::string MonitorText(KernelDebugClient& kd, const std::string& command)
 {
 	std::string reply;
 	std::vector<uint8_t> text(command.begin(), command.end());
-	if (!kd.Request("qRcmd," + HexBytes(text), &reply) || reply.empty() || reply == "OK")
+	if (!kd.Monitor(HexBytes(text), &reply) || reply.empty())
 		return "";
 	const auto bytes = FromHex(reply);
 	return std::string(bytes.begin(), bytes.end());
