@@ -307,6 +307,7 @@ void DapServer::HandleRequest(const Request& req) {
 			req.command == "configurationDone" || req.command == "cancel" ||
 			(req.command == "threads" && GuestSupports(IpcCommand::GetThreads)) ||
 			(req.command == "readMemory" && GuestSupports(IpcCommand::ReadMemory)) ||
+			(req.command == "writeMemory" && GuestSupports(IpcCommand::WriteMemory)) ||
 			(req.command == "disassemble" && GuestSupports(IpcCommand::ReadMemory)) ||
 			// Execution control on the backend's selected-thread stops. Steps are
 			// instruction steps (no guest symbols); frames come from registers.
