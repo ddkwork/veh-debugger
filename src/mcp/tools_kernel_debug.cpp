@@ -121,7 +121,10 @@ json McpServer::ToolKdConnect(const json& args)
 	// VirtualBox 7.2's stub mis-sizes the P value (RTStrConvertHexBytes gets
 	// the digit count as the byte count), sends no reply and drops the link;
 	// it has no G. Its DBGC console's 'r' prints rip= and sets registers.
-	kd_dbgc_ = MonitorText(*kd_, "r").find("rip=") != std::string::npos;
+	// It also drops the last byte of every qRcmd command (dbgcEvalCommand gets
+	// the decoded length - 1: 'r' was an unknown command ''), so DBGC
+	// commands get a trailing space.
+	kd_dbgc_ = MonitorText(*kd_, "r ").find("rip=") != std::string::npos;
 	std::string threads, more;
 	kd_->Request("qfThreadInfo", &threads);
 	json cpus = json::array();
@@ -242,7 +245,7 @@ json McpServer::ToolKdRegisters(const json& args)
 	for (size_t i = 0; i < 6 && g.size() >= 17 * 8 + 4 + (i + 1) * 4; ++i)
 		out[kGdbSegs[i]] = HexAddr(Le(g, 17 * 8 + 4 + i * 4, 4));
 	// System state (stub monitor command), when the stub offers it.
-	const std::string extra = MonitorText(*kd_, "regs");
+	const std::string extra = MonitorText(*kd_, kd_dbgc_ ? "regs " : "regs");
 	for (const char* key : { "cr3", "gs_base", "fs_base", "idt", "cpl" }) {
 		const std::string tag = std::string(key) + "=";
 		const size_t at = extra.find(tag);
@@ -276,7 +279,7 @@ json McpServer::ToolKdSetRegister(const json& args)
 		char command[64];
 		snprintf(command, sizeof(command), "r %s = 0x%llx", name == "eflags" ? "rflags" : name.c_str(),
 			static_cast<unsigned long long>(value));
-		const std::string text = MonitorText(*kd_, command);
+		const std::string text = MonitorText(*kd_, std::string(command) + " ");
 		std::string reply;
 		char read[8];
 		snprintf(read, sizeof(read), "p%x", number);
@@ -390,7 +393,7 @@ json McpServer::ToolKdMonitor(const json& args)
 		return KdNotConnected();
 	if (kd_->running())
 		return {{"error", "running: veh_kd_break first"}};
-	const std::string text = MonitorText(*kd_, args.value("command", "help"));
+	const std::string text = MonitorText(*kd_, args.value("command", "help") + (kd_dbgc_ ? " " : ""));
 	return {{"output", text}};
 }
 
