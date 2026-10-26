@@ -84,6 +84,34 @@ def run():
                     result = client.tool(tool, arguments)
                     assert 'unsupported' in result.get('error', '').lower(), result
             assert client.tool('veh_detach').get('success')
+        # External peers choose opaque IDs: low hardware and high software IDs are valid.
+        result = client.tool('veh_attach', {**args, 'agent_args': ['--metadata', 'bp-kinds']})
+        assert result.get('success'), result
+        hardware = client.tool('veh_set_data_breakpoint', {'address': '0x1000', 'type': 'readwrite', 'size': 4})
+        assert hardware.get('id') == 1, hardware
+        stop = client.tool('veh_continue', {'wait': True, 'timeout': 1})
+        assert stop.get('breakpointType') == 'hardware' and stop.get('breakpointId') == 1, stop
+        report = client.tool('veh_batch', {'steps': [
+            {'tool': 'veh_continue', 'args': {'wait': True, 'timeout': 1}},
+        ]})
+        stop = report['results'][0]['result']
+        assert stop.get('breakpointType') == 'hardware', report
+        assert client.tool('veh_continue', {'wait': False}).get('success')
+        client.tool('veh_threads')  # IPC ordering barrier: the stop precedes this reply.
+        stop = client.tool('veh_continue', {'wait': True, 'timeout': 1})
+        assert stop.get('breakpointType') == 'hardware', stop
+        assert client.tool('veh_remove_data_breakpoint', {'id': hardware['id']}).get('success')
+        software = client.tool('veh_set_breakpoint', {'address': '0x1000'})
+        assert software.get('id') == 20001, software
+        report = client.tool('veh_batch', {'steps': [
+            {'tool': 'veh_continue', 'args': {'wait': True, 'timeout': 1}},
+        ]})
+        stop = report['results'][0]['result']
+        assert stop.get('breakpointType') == 'software' and stop.get('breakpointId') == 20001, report
+        assert client.tool('veh_remove_breakpoint', {'id': software['id']}).get('success')
+        unknown = client.tool('veh_continue', {'wait': True, 'timeout': 1})
+        assert unknown.get('breakpointId') == 7 and 'breakpointType' not in unknown, unknown
+        assert client.tool('veh_detach').get('success')
         for mode in ('wrong-pid', 'bad-width', 'wrong-scope', 'not-found', 'truncated', 'host-cap'):
             result = client.tool('veh_attach', {**args, 'agent_args': ['--metadata', mode]})
             assert 'error' in result, (mode, result)

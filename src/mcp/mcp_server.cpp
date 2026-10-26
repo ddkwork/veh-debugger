@@ -751,11 +751,13 @@ void McpServer::OnIpcEvent(uint32_t eventId, const uint8_t* payload, uint32_t si
 			} else {
 				// Look up BpMapping for condition/hitCondition/logMessage
 				bool shouldStop = true;
+				std::string bpType; // backend IDs have no portable software/hardware ranges
 				std::string logOutput;
 				{
 					std::lock_guard<std::mutex> lock(session_.GetBpMutex());
 					for (auto& bp : session_.GetSwBreakpoints()) {
 						if (bp.id == e->breakpointId) {
+							bpType = "software";
 							bp.hitCount++;
 
 							if (!bp.condition.empty()) {
@@ -787,6 +789,7 @@ void McpServer::OnIpcEvent(uint32_t eventId, const uint8_t* payload, uint32_t si
 					// 'value' 토큰 = 감시 주소의 현재 값 (예: 'value != 0' -> 0 쓰기 노이즈 무시)
 					for (auto& bp : session_.GetHwBreakpoints()) {
 						if (bp.id != e->breakpointId) continue;
+						bpType = "hardware";
 						bp.hitCount++;
 						if (!bp.condition.empty()) {
 							std::string cond = bp.condition;
@@ -864,10 +867,6 @@ void McpServer::OnIpcEvent(uint32_t eventId, const uint8_t* payload, uint32_t si
 							std::lock_guard<std::mutex> lock(eventMutex_);
 							pendingEvents_.push({"notifications/logging", {{"level", "info"}, {"logger", "veh-debugger"}, {"data", buf}}}); SetEvent(eventsReady_);
 						}
-						std::string bpType;
-						if (e->breakpointId >= 10001) bpType = "hardware";
-						else if (e->breakpointId > 0) bpType = "software";
-
 						session_.SignalStop("breakpoint", e->address, e->threadId, e->breakpointId, bpType);
 					}
 				}

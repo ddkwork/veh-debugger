@@ -52,6 +52,7 @@ int wmain(int argc, wchar_t** argv) {
     const bool machineMode=mode.rfind(L"machine",0)==0;
     const bool vmMode=mode.rfind(L"vm",0)==0||machineMode;uint32_t vmState=2;
     uint32_t continueRequests = 0, pauseRequests = 0;
+    uint32_t fixtureBreakpointId = 0;
     if ((!pid&&!machineMode)||name.empty()||(machineMode&&pidProvided)) return 2;
     HANDLE pipe = CreateNamedPipeW(name.c_str(), PIPE_ACCESS_DUPLEX, PIPE_TYPE_BYTE | PIPE_WAIT, 1, 65536, 65536, 0, nullptr);
     if (pipe == INVALID_HANDLE_VALUE) return 3;
@@ -81,6 +82,12 @@ int wmain(int argc, wchar_t** argv) {
                 for (auto op : {veh::IpcCommand::Continue, veh::IpcCommand::Pause, veh::IpcCommand::TraceCallers})
                     veh::SetCommandSupported(caps.commands, op);
             }
+            if (mode == L"bp-kinds") {
+                for (auto op : {veh::IpcCommand::SetBreakpoint, veh::IpcCommand::RemoveBreakpoint,
+                               veh::IpcCommand::SetHwBreakpoint, veh::IpcCommand::RemoveHwBreakpoint,
+                               veh::IpcCommand::Continue})
+                    veh::SetCommandSupported(caps.commands, op);
+            }
             if (mode == L"delayed-trace") veh::SetCommandSupported(caps.commands, veh::IpcCommand::TraceCallers);
             strcpy_s(caps.name, "synthetic-guest");
             if (!reply(pipe, header.command, caps)) break;
@@ -95,6 +102,25 @@ int wmain(int argc, wchar_t** argv) {
             if (mode == L"wrong-scope") info.scope = veh::IpcTargetScope::Host;
             if (mode == L"not-found") { info = {}; info.status = veh::IpcStatus::NotFound; }
             if (!send(pipe, header.command, &info, (mode == L"truncated"||mode==L"machine-truncated") ? 8 : sizeof(info))) break;
+        } else if (mode == L"bp-kinds" && command == veh::IpcCommand::SetHwBreakpoint) {
+            fixtureBreakpointId = 1; // external backends need not reserve the DLL ID range
+            const veh::SetHwBreakpointResponse response{veh::IpcStatus::Ok, fixtureBreakpointId, 0};
+            if (!reply(pipe, header.command, response)) break;
+        } else if (mode == L"bp-kinds" && command == veh::IpcCommand::SetBreakpoint) {
+            fixtureBreakpointId = 20001; // a high software ID is equally valid
+            const veh::SetBreakpointResponse response{veh::IpcStatus::Ok, fixtureBreakpointId};
+            if (!reply(pipe, header.command, response)) break;
+        } else if (mode == L"bp-kinds" && (command == veh::IpcCommand::RemoveHwBreakpoint ||
+                                          command == veh::IpcCommand::RemoveBreakpoint)) {
+            fixtureBreakpointId = 0;
+            if (!reply(pipe, header.command, veh::IpcStatus::Ok)) break;
+        } else if (mode == L"bp-kinds" && command == veh::IpcCommand::Continue) {
+            const veh::ContinueResponse response{veh::IpcStatus::Ok, 0, 0};
+            if (!reply(pipe, header.command, response)) break;
+            veh::BreakpointHitEvent event{};
+            event.threadId = 77; event.address = 0x1000;
+            event.breakpointId = fixtureBreakpointId ? fixtureBreakpointId : 7;
+            if (!send(pipe, static_cast<uint32_t>(veh::IpcEvent::BreakpointHit), &event, sizeof(event))) break;
         } else if (mode == L"reply-errors" &&
                    (command == veh::IpcCommand::GetThreads || command == veh::IpcCommand::GetModules)) {
             if (!reply(pipe, header.command, veh::IpcStatus::Unsupported)) break;

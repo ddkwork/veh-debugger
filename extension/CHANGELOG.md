@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Fixed
+- **Backend-independent breakpoint kinds** -- MCP stop results use the registered breakpoint kind instead of guessing from numeric ID ranges. External hardware/data breakpoints with low IDs report `hardware`, software breakpoints with high IDs report `software`, and unknown IDs omit the kind.
+
 ## 1.2.1 - 2026-10-26
 
 ### Added
