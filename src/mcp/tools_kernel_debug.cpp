@@ -226,14 +226,16 @@ json McpServer::ToolKdRegisters(const json& args)
 	if (!KdSelect(args, error))
 		return error;
 	std::string reply;
-	if (!kd_->Request("g", &reply) || reply.size() < 2 * (17 * 8 + 4 + 24))
+	// The general registers and eflags are required; stubs send a varying
+	// number of segment registers after them (VirtualBox: cs and ss).
+	if (!kd_->Request("g", &reply) || reply.size() < 2 * (17 * 8 + 4))
 		return {{"error", "register read failed"}, {"reply", reply.substr(0, 16)}};
 	const auto g = FromHex(reply);
 	json out;
 	for (size_t i = 0; i < 17; ++i)
 		out[kGdbRegs[i]] = HexAddr(Le(g, i * 8, 8));
 	out["rflags"] = HexAddr(Le(g, 17 * 8, 4));
-	for (size_t i = 0; i < 6; ++i)
+	for (size_t i = 0; i < 6 && g.size() >= 17 * 8 + 4 + (i + 1) * 4; ++i)
 		out[kGdbSegs[i]] = HexAddr(Le(g, 17 * 8 + 4 + i * 4, 4));
 	// System state (stub monitor command), when the stub offers it.
 	const std::string extra = MonitorText(*kd_, "regs");

@@ -313,6 +313,9 @@ bool KernelDebugClient::Receive(std::string* payload, uint32_t timeout_ms)
 			if (hash != std::string::npos && buffer_.size() >= hash + 3) {
 				*payload = buffer_.substr(start + 1, hash - start - 1);
 				buffer_.erase(0, hash + 3);
+				// VirtualBox's stub ends every payload with a NUL byte.
+				while (!payload->empty() && payload->back() == '\0')
+					payload->pop_back();
 				if (ack_)
 					transport_->Write("+", 1);
 				return true;
