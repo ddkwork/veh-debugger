@@ -432,8 +432,10 @@ bool KernelDebugClient::WaitStop(std::string* stop, uint32_t timeout_ms)
 	for (int skipped = 0; skipped < 4096; ++skipped) {
 		const auto now = GetTickCount64();
 		if (now >= deadline || !Receive(stop, static_cast<uint32_t>(deadline - now))) {
-			std::fprintf(stderr, "kd: no stop reply within %u ms (%d console packet(s) skipped, %zu byte(s) buffered)\n",
-				timeout_ms, skipped, buffer_.size());
+			char note[160];
+			std::snprintf(note, sizeof(note), "no stop reply within %u ms (%d console packet(s) skipped, %zu byte(s) buffered%s%.40s)",
+				timeout_ms, skipped, buffer_.size(), buffer_.empty() ? "" : ": ", buffer_.c_str());
+			wait_diagnostic_ = note;
 			return false;
 		}
 		const bool console = stop->size() > 1 && (*stop)[0] == 'O' && *stop != "OK" &&

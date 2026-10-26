@@ -191,7 +191,7 @@ json McpServer::ToolKdBreak(const json& args)
 		return KdNotConnected();
 	std::string stop;
 	if (!kd_->Interrupt(&stop, JsonUint32(args, "timeout_ms", 10000)))
-		return {{"error", "the target did not stop"}};
+		return {{"error", "the target did not stop"}, {"diagnostic", kd_->wait_diagnostic()}};
 	return {{"running", false}, {"stop", StopJson(stop)}};
 }
 
@@ -211,7 +211,7 @@ json McpServer::ToolKdStep(const json& args)
 	}
 	for (uint32_t i = 0; i < count; ++i) {
 		if (!kd_->Resume("vCont;s" + thread) || !kd_->WaitStop(&stop, JsonUint32(args, "timeout_ms", 10000)))
-			return {{"error", "step did not complete"}, {"steps", i}};
+			return {{"error", "step did not complete"}, {"steps", i}, {"diagnostic", kd_->wait_diagnostic()}};
 	}
 	json regs = ToolKdRegisters(json::object());
 	json out = {{"steps", count}, {"stop", StopJson(stop)}, {"rip", regs.value("rip", "")}};
