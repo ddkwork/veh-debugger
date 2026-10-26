@@ -342,6 +342,12 @@ bool KernelDebugClient::Handshake(std::string* stop, std::string* error)
 		*error = "no answer to qSupported (is the stub enabled and the transport right?)";
 		return false;
 	}
+	// A stub that halts on connect (VirtualBox's DBGC) sends its stop reply
+	// unasked, ahead of the qSupported answer: keep it and read the answer.
+	if (!reply.empty() && (reply[0] == 'T' || reply[0] == 'S') && !Receive(&reply, 5000)) {
+		*error = "no answer to qSupported after the stub's stop reply";
+		return false;
+	}
 	if (Request("QStartNoAckMode", &reply) && reply == "OK")
 		ack_ = false;
 	if (!Request("?", stop)) {
