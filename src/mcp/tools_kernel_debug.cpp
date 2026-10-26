@@ -382,8 +382,11 @@ json McpServer::ToolKdBreakpoint(const json& args)
 	snprintf(packet, sizeof(packet), "%c%c,%llx,%x", action == "remove" ? 'z' : 'Z', type,
 		static_cast<unsigned long long>(address), size);
 	std::string reply;
-	if (!kd_->Request(packet, &reply))
-		return {{"error", "no answer"}};
+	// Live (VirtualBox DBGC, kd_x64 run 210451): a z0 right after a breakpoint
+	// stop got no answer within 5 s while the console was still reporting the
+	// event. Z/z are idempotent: ask once more.
+	if (!kd_->Request(packet, &reply) && !kd_->Request(packet, &reply, 10000))
+		return {{"error", "no answer"}, {"diagnostic", kd_->wait_diagnostic()}};
 	if (reply.empty())
 		return {{"error", "breakpoints not supported by this stub"}};
 	if (reply != "OK")
