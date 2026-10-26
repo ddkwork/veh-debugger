@@ -31,6 +31,10 @@ KERNEL.OpenProcess.restype = wintypes.HANDLE
 KERNEL.WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
 KERNEL.TerminateProcess.argtypes = (wintypes.HANDLE, wintypes.UINT)
 KERNEL.CloseHandle.argtypes = (wintypes.HANDLE,)
+KERNEL.OpenThread.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+KERNEL.OpenThread.restype = wintypes.HANDLE
+KERNEL.GetProcessIdOfThread.argtypes = (wintypes.HANDLE,)
+KERNEL.GetProcessIdOfThread.restype = wintypes.DWORD
 KERNEL.QueryFullProcessImageNameW.argtypes = (wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD))
 
 
@@ -283,6 +287,14 @@ def lifecycle_checks(client, runner, directory, target_handles, port, pin, token
     launched = client.tool("veh_launch", {
         "backend": "host", "program": sys.executable, "args": ["-c", code], "stopOnEntry": True}, timeout=25)
     assert launched.get("success"), launched
+    assert launched["addressBits"] == struct.calcsize("P") * 8, launched
+    assert launched["mainThreadId"] > 0, launched
+    initial = KERNEL.OpenThread(0x0800, False, launched["mainThreadId"])
+    assert initial, "initial thread must exist while stopOnEntry holds it"
+    try:
+        assert KERNEL.GetProcessIdOfThread(initial) == launched["pid"], launched
+    finally:
+        KERNEL.CloseHandle(initial)
     target = owned_handle(launched["pid"], sys.executable, runner.pid, directory)
     target_handles.append(target)
     assert not marker.exists()
@@ -652,11 +664,12 @@ try{$pin=([BitConverter]::ToString($hash.ComputeHash($cert.RawData))).Replace('-
             batch_launch = client.tool("veh_batch", {"steps": [
                 {"tool": "veh_launch", "args": {"backend": "host", "program": sys.executable,
                  "args": ["-c", batch_code], "stopOnEntry": False},
-                 "result_fields": ["success", "pid"]},
+                 "result_fields": ["success", "pid", "addressBits", "mainThreadId"]},
                 {"tool": "veh_threads", "args": {}, "result_fields": ["count"]},
             ]}, timeout=25)
             batch_started, batch_threads = [item["result"] for item in batch_launch["results"]]
             assert batch_started.get("success") and batch_started.get("pid", 0) > 0, batch_launch
+            assert batch_started["addressBits"] == struct.calcsize("P") * 8 and batch_started["mainThreadId"] > 0, batch_launch
             assert batch_threads.get("count") == 1, batch_threads
             batch_target = owned_handle(batch_started["pid"], sys.executable, runner.pid, directory)
             target_handles.append(batch_target)
@@ -738,6 +751,7 @@ try{$pin=([BitConverter]::ToString($hash.ComputeHash($cert.RawData))).Replace('-
                     assert "active connection" in launched.get("error", ""), launched
                     threading.Event().wait(0.05)
                 assert launched.get("success") and launched["pid"] == first_pid, "uncertain retry created another target"
+                assert launched["addressBits"] == struct.calcsize("P") * 8 and launched["mainThreadId"] > 0, launched
                 assert not marker.exists(), "stopOnEntry allowed entry execution"
                 assert client.tool("veh_detach").get("success"), "host detach"
                 wait_file(marker)

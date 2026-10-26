@@ -415,6 +415,7 @@ DebugSession::LaunchResult DebugSession::Launch(const LaunchOptions& opts) {
 
 	launchedMainThreadId_ = lr.mainThreadId;
 	mainThreadResumed_ = false;
+    targetAddressBits_ = Injector::IsExe32Bit(opts.program) ? 32 : 64;
 
 	if (opts.agent) {
 		// The agent serves a suspended process (no loader run yet); the main
@@ -466,7 +467,7 @@ DebugSession::LaunchResult DebugSession::Launch(const LaunchOptions& opts) {
 
 	// Set disassembler bitness
 	{
-		bool is64 = !Injector::IsExe32Bit(opts.program);
+		bool is64 = targetAddressBits_ == 64;
 		disassembler_ = CreateDisassembler(is64);
 		LOG_INFO("Disassembler set to %s mode", is64 ? "x64" : "x86");
 	}

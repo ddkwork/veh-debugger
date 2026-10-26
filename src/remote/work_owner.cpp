@@ -221,8 +221,10 @@ WorkOwner::~WorkOwner() { Stop(); }
 void WorkOwner::Notify(std::function<void()> notify) { std::lock_guard<std::mutex> lock(mutex_); notify_ = std::move(notify); }
 Json WorkOwner::Describe() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    return {{"success", true}, {"work_id", id_}, {"target_scope", scope_}, {"pid", pid_},
+    Json result{{"success", true}, {"work_id", id_}, {"target_scope", scope_}, {"pid", pid_},
         {"address_bits", addressBits_}, {"outcome_unknown", outcomeUnknown_}};
+    if (mainThreadId_) result["main_thread_id"] = mainThreadId_;
+    return result;
 }
 bool WorkOwner::Matches(const std::string& backend, const std::string& scope, uint32_t pid) const {
     return backendName_ == backend && scope_ == scope && pid_ == pid;

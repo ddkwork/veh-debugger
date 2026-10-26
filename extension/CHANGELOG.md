@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Fixed
+- **Host launch metadata** -- MCP `veh_launch` includes the target address width and the initial main-thread ID when available, for both local and TCP launches. The remote runner forwards the ID it received at process creation; older runners remain compatible and omit unavailable thread metadata.
 - **Backend-independent breakpoint kinds** -- MCP stop results use the registered breakpoint kind instead of guessing from numeric ID ranges. External hardware/data breakpoints with low IDs report `hardware`, software breakpoints with high IDs report `software`, and unknown IDs omit the kind.
 
 ## 1.2.1 - 2026-10-26

@@ -8,6 +8,7 @@ import pytest
 import time
 
 from mcp_test_client import McpClient, ROOT
+from build_paths import IS_X86
 
 
 def _build_dir():
@@ -51,11 +52,15 @@ def test_batch_can_launch_then_inspect_without_a_prior_session():
             assert "cannot be repeated" in repeated["error"]
             report = client.tool("veh_batch", {"steps": [
                 {"tool": "veh_launch", "args": {"program": target, "stopOnEntry": True},
-                 "result_fields": ["success", "pid"]},
+                 "result_fields": ["success", "pid", "addressBits", "mainThreadId"]},
                 {"tool": "veh_modules", "args": {}},
             ]})
             launch, modules = [entry["result"] for entry in report["results"]]
             assert launch["success"] is True and launch["pid"] > 0
+            assert launch["addressBits"] == (32 if IS_X86 else 64), launch
+            assert launch["mainThreadId"] > 0, launch
+            threads = client.tool("veh_threads")
+            assert launch["mainThreadId"] in [thread["id"] for thread in threads["threads"]], (launch, threads)
             assert modules["modules"]
         finally:
             client.tool("veh_terminate")

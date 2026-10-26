@@ -108,6 +108,13 @@ bool TcpIpcTransport::Connect(uint32_t, int timeoutMs) {
         if (!reply.at("outcome_unknown").is_boolean()) throw std::invalid_argument("metadata");
         work_.pid = reply.at("pid").get<uint32_t>();
         work_.addressBits = reply.at("address_bits").get<uint32_t>();
+        work_.mainThreadId = 0; // absent metadata from an older peer must not retain an earlier ID
+        if (const auto initial = reply.find("main_thread_id"); initial != reply.end()) {
+            if (work_.scope != "host" || !initial->is_number_unsigned() ||
+                initial->get<uint64_t>() == 0 || initial->get<uint64_t>() > UINT32_MAX)
+                throw std::invalid_argument("metadata");
+            work_.mainThreadId = initial->get<uint32_t>();
+        }
         work_.outcomeUnknown = reply.at("outcome_unknown").get<bool>();
         if (!remaining() || work_.id.size() != 64 || !std::all_of(work_.id.begin(), work_.id.end(), [](char c) {
             return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'); }) || (work_.scope != "host" && work_.scope != "guest" && work_.scope != "vm") ||

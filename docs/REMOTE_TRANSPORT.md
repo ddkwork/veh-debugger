@@ -86,6 +86,12 @@ Use `veh_attach(pid=1234, backend="remote-driver")` or
 `veh_launch(program="C:/Lab/sample.exe", backend="remote-driver")`.
 The program, working directory, and environment belong to the **remote** analysis
 VM. Host launch starts suspended; continue releases its owned initial thread.
+`veh_launch` returns `addressBits` (32 or 64) and, when known, `mainThreadId`.
+The latter is the initial target thread ID captured at creation, not an agent thread
+or a promise that the thread is still alive after execution resumes. The runner's
+optional OpenWork `main_thread_id` field is forwarded without opening a local
+thread handle. Older runners omit it and remain compatible. `stopOnEntry` holds
+the newly created main thread; it does not run the loader to the PE entry point.
 VirtualBox/WHPX **guest process launch is unsupported**: attach to an existing
 guest PID. Whole-VM attach does not create a process either.
 

@@ -177,6 +177,10 @@ public:
     bool IsGuestTarget() const { return guestTarget_; }
     bool IsVirtualMachineTarget() const { return vmTarget_; }
 	uint32_t TargetAddressBits() const { return targetAddressBits_; }
+    uint32_t LaunchMainThreadId() const {
+        const auto* remote = RemoteWork();
+        return remote ? remote->mainThreadId : launchedMainThreadId_;
+    }
     bool IsRemoteTarget() const { return ipcTransport_->IsRemote(); }
     const RemoteWorkInfo* RemoteWork() const {
         const auto* tcp = dynamic_cast<const TcpIpcTransport*>(ipcTransport_.get());

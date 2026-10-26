@@ -293,7 +293,9 @@ json McpServer::ToolLaunch(const json& args) {
 	json ret = {{"success", true}, {"pid", result.pid}, {"message",
 		opts.stopOnEntry ? "Launched and attached (stopped on entry)" : "Launched and attached"}};
 	ret["backend"] = BackendSummary(session_.GetBackendInfo(), session_.RemoteWork());
-	if (session_.IsGuestTarget()) ret["addressBits"] = session_.TargetAddressBits();
+    const auto addressBits = session_.TargetAddressBits();
+    if (addressBits == 32 || addressBits == 64) ret["addressBits"] = addressBits;
+    if (const auto threadId = session_.LaunchMainThreadId()) ret["mainThreadId"] = threadId;
 	auto modules = session_.GetModules();
 	if (!modules.empty()) {
 		char buf[20]; snprintf(buf, sizeof(buf), "0x%llX", modules[0].baseAddress);

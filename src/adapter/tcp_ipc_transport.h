@@ -17,6 +17,7 @@ struct RemoteWorkInfo {
     std::string scope;
     uint32_t pid = 0;
     uint32_t addressBits = 0;
+    uint32_t mainThreadId = 0; // optional creation metadata; never a local thread handle
     bool outcomeUnknown = false;
 };
 enum class RemoteOpenOutcome { NotSent, Rejected, Unknown, Opened };
