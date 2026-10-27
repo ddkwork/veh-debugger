@@ -3462,10 +3462,11 @@ bool DapServer::EvaluateCondition(const std::string& condition, uint32_t threadI
 		if (!addrStr.empty() && addrStr.back() == ']') addrStr.pop_back();
 		try {
 			uint64_t addr = std::stoull(addrStr, nullptr, 0);
-			if (targetProcess_) {
-				SIZE_T bytesRead = 0;
-				ReadProcessMemory(targetProcess_, (LPCVOID)addr, &lhsVal, 8, &bytesRead);
-			}
+			// 읽지 못한 메모리(게스트 대상 포함)는 0 으로 비교하지 않고 중단한다.
+			SIZE_T bytesRead = 0;
+			if (!targetProcess_ ||
+				!ReadProcessMemory(targetProcess_, (LPCVOID)addr, &lhsVal, 8, &bytesRead) || bytesRead != 8)
+				return true;
 		} catch (...) { return true; }
 	} else if (TryParseRegisterName(lhs)) {
 		// 레지스터 — cachedRegs 우선 사용 (Reader 스레드에서 SendAndReceive 데드락 방지)

@@ -42,6 +42,7 @@ bool PipeClient::AsyncReadExact(void* buf, DWORD size, DWORD timeoutMs) {
 			totalRead += bytesRead;
 		} else {
 			CancelIoEx(pipe_, &ov);
+			{ DWORD drained = 0; (void)GetOverlappedResult(pipe_, &ov, &drained, TRUE); }
 			CloseHandle(ov.hEvent);
 			// CancelIoEx/CloseHandle가 GetLastError()를 덮어쓰므로
 			// 호출자가 타임아웃과 실제 오류를 구분할 수 있도록 명시적으로 설정
@@ -86,6 +87,7 @@ bool PipeClient::AsyncWriteExact(const void* buf, DWORD size, DWORD timeoutMs) {
 			totalWritten += bytesWritten;
 		} else {
 			CancelIoEx(pipe_, &ov);
+			{ DWORD drained = 0; (void)GetOverlappedResult(pipe_, &ov, &drained, TRUE); }
 			CloseHandle(ov.hEvent);
 			return false;
 		}
@@ -104,6 +106,7 @@ bool PipeClient::Connect(uint32_t targetPid, int timeoutMs) {
 	const std::wstring pipeName = pipeName_.empty() ? GetPipeName(targetPid) : pipeName_;
 
 	stopEvent_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+	{ std::lock_guard<std::mutex> lock(responseMutex_); desynced_ = false; }
 
 	auto start = std::chrono::steady_clock::now();
 	while (true) {
@@ -199,6 +202,13 @@ bool PipeClient::SendAndReceive(IpcCommand cmd,
 		diagnostics->systemError = systemError;
 		diagnostics->advertisedPayloadSize = advertisedPayloadSize;
 	};
+	{
+		std::lock_guard<std::mutex> lock(responseMutex_);
+		if (desynced_) {
+			report(PipeExchangeFailure::SendFailed, ERROR_INVALID_STATE);
+			return false;
+		}
+	}
 	report(PipeExchangeFailure::None);
 	std::lock_guard<std::mutex> sendLock(sendReceiveMutex_);
 	struct RequestInFlightGuard {
@@ -270,6 +280,7 @@ bool PipeClient::SendAndReceive(IpcCommand cmd,
 	waitingForResponse_ = false;
 
 	if (!ok) {
+		desynced_ = true;
 		LOG_ERROR("SendAndReceive timeout for cmd 0x%04X (%dms)", static_cast<uint32_t>(cmd), timeoutMs);
 		report(PipeExchangeFailure::WaitTimeout, WAIT_TIMEOUT, responseAdvertisedPayloadSize_);
 		return false;

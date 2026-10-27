@@ -1884,8 +1884,8 @@ DebugSession::TraceBasicBlocksResult DebugSession::TraceBasicBlocks(
 	size_t headerSize = header->headerSize;
 	result.responseHeaderSize = header->headerSize;
 	auto requiredSize = [&](size_t candidate) {
-		uint32_t registerEventCount = candidate >= kTraceBasicBlocksResponseV4Size ?
-			header->registerEventCount : 0;
+		uint32_t registerEventCount = candidate >= kTraceBasicBlocksResponseV4Size &&
+			data.size() >= kTraceBasicBlocksResponseV4Size ? header->registerEventCount : 0;
 		return candidate +
 		static_cast<size_t>(header->blockCount) * sizeof(TraceBasicBlockEntry) +
 		static_cast<size_t>(header->edgeCount) * sizeof(TraceBasicBlockEdgeEntry) +

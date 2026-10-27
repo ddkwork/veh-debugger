@@ -99,6 +99,9 @@ protected:
 	bool waitingForResponse_ = false;
 	uint32_t expectedCommand_ = 0;
 	bool responseAborted_ = false;  // reader thread exit signal
+	// A timed-out request may still be answered: the next reply could be
+	// its late response, so the connection refuses requests until reconnect.
+	bool desynced_ = false;
 	PipeExchangeFailure responseFailure_ = PipeExchangeFailure::None;
 	DWORD responseSystemError_ = ERROR_SUCCESS;
 	uint32_t responseAdvertisedPayloadSize_ = 0;
