@@ -4,6 +4,7 @@
 #include "common/logger.h"
 #include <sstream>
 #include <algorithm>
+#include <cstring>
 #include <filesystem>
 #include <TlHelp32.h>
 #include <Psapi.h>
@@ -90,9 +91,12 @@ DebugSession::~DebugSession() {
 	}
 }
 
-void DebugSession::UseTransport(const std::wstring& pipeName) {
+void DebugSession::UseTransport(const std::wstring& pipeName, int minimumTimeoutMs) {
 	if (pipeName == transportPipe_ && !ipcTransport_->IsRemote()) return;
-	ipcTransport_ = std::make_unique<PipeClient>(pipeName);
+	// A guest backend's pipe (named) gets the DAP adapter's 30 s floor: it
+	// pauses the VM and runs guest-owned calls (live: a WoW64 stack walk with
+	// page fault-ins outlasted the 3 s default and returned no frames).
+	ipcTransport_ = std::make_unique<PipeClient>(pipeName, minimumTimeoutMs);
 	transportPipe_ = pipeName;
 }
 
@@ -145,7 +149,7 @@ bool DebugSession::ConnectExternalAgent(uint32_t pid, const ExternalAgent& agent
 		CloseHandle(pi.hProcess);
 		running = externalAgents_.emplace(pid, RunningAgent{agent.path, pipe, pi.dwProcessId, agent.args, agent.guestTarget, agent.vmTarget}).first;
 	}
-	UseTransport(running->second.pipe);
+	UseTransport(running->second.pipe, (agent.guestTarget || agent.vmTarget) ? 30000 : 0);
 	if (!ipcTransport_->Connect(pid, 5000)) {
 		lastAttachError_ = "External backend: agent pipe for PID " + std::to_string(pid) + " did not come up within 5s.";
 		externalAgents_.erase(running);
@@ -484,20 +488,43 @@ DebugSession::LaunchResult DebugSession::Launch(const LaunchOptions& opts) {
 bool DebugSession::Detach() {
 	if (!attached_) return false;
 
-	attached_ = false;
-	ResumeMainThread();
-	StopProcessMonitor();
-
-    const bool wasConnected = ipcTransport_->IsConnected();
-    bool detachConfirmed = true;
-	ipcTransport_->StopHeartbeat();
-	ipcTransport_->StopEventListener();
-	try {
-        const bool sent = ipcTransport_->SendCommand(IpcCommand::Detach);
-        if (auto* remote = dynamic_cast<TcpIpcTransport*>(ipcTransport_.get())) {
-            detachConfirmed = !wasConnected || (sent && remote->WaitForWorkClose(5000));
-        }
-	} catch (...) { detachConfirmed = !ipcTransport_->IsRemote(); }
+	auto* remote = dynamic_cast<TcpIpcTransport*>(ipcTransport_.get());
+	const bool wasConnected = ipcTransport_->IsConnected();
+	bool detachConfirmed = true;
+	if (remote) {
+		// A remote work ends when the resident closes it, acknowledged or not.
+		attached_ = false;
+		ResumeMainThread();
+		StopProcessMonitor();
+		ipcTransport_->StopHeartbeat();
+		ipcTransport_->StopEventListener();
+		try {
+			const bool sent = ipcTransport_->SendCommand(IpcCommand::Detach);
+			detachConfirmed = !wasConnected || (sent && remote->WaitForWorkClose(5000));
+		} catch (...) { detachConfirmed = false; }
+	} else {
+		// A local backend's Ok comes first: a refused or lost Detach reply keeps
+		// the session (its guest effects may remain), so a retry stays possible
+		// and no attach/launch replaces it.
+		if (!backendInfo_.Supports(IpcCommand::Detach)) return false;
+		std::vector<uint8_t> reply;
+		if (!ipcTransport_->SendAndReceive(IpcCommand::Detach, nullptr, 0, reply, 5000) ||
+			reply.size() != sizeof(IpcStatus)) {
+			lastAttachError_ = "Backend detach failed or its reply is unavailable; session retained";
+			return false;
+		}
+		IpcStatus status{};
+		std::memcpy(&status, reply.data(), sizeof(status));
+		if (status != IpcStatus::Ok) {
+			lastAttachError_ = "Backend refused detach (status " + std::to_string(static_cast<uint32_t>(status)) + "); session retained";
+			return false;
+		}
+		ResumeMainThread();
+		attached_ = false;
+		StopProcessMonitor();
+		ipcTransport_->StopHeartbeat();
+		ipcTransport_->StopEventListener();
+	}
 	ipcTransport_->Disconnect();
 
 	{
@@ -517,7 +544,7 @@ bool DebugSession::Detach() {
 	guestTarget_ = false;vmTarget_ = false;
 	externalAttachPending_ = false;
 	targetAddressBits_ = 0;
-    if (!detachConfirmed) lastAttachError_ = "Remote detach completion was not confirmed; reconnect after the resident closes the old work";
+	if (!detachConfirmed) lastAttachError_ = "Remote detach completion was not confirmed; reconnect after the resident closes the old work";
 	return detachConfirmed;
 }
 
@@ -994,19 +1021,28 @@ std::vector<ThreadEntry> DebugSession::GetThreads(std::string* error) {
 		return result;
 	}
 
-	if (respData.size() < sizeof(GetThreadsResponse)) { if (error) *error = detail; return result; }
-	auto* resp = reinterpret_cast<const GetThreadsResponse*>(respData.data());
-	if (resp->status != IpcStatus::Ok) return result;
+	// The whole list or nothing: the count must match the payload exactly
+	// (no short or extra rows) and every name must end inside its field.
+	GetThreadsResponse header{};
+	if (respData.size() < sizeof(header)) { if (error) *error = detail; return result; }
+	std::memcpy(&header, respData.data(), sizeof(header));
+	const size_t payloadSize = respData.size() - sizeof(header);
+	if (payloadSize % sizeof(ThreadInfo) != 0 || header.count != payloadSize / sizeof(ThreadInfo)) {
+		if (error) *error = "GetThreads: incomplete or malformed list (count does not match the payload)";
+		return result;
+	}
 
-	auto* infos = reinterpret_cast<const ThreadInfo*>(respData.data() + sizeof(GetThreadsResponse));
-	uint32_t count = resp->count;
-	const size_t maxItems = (respData.size() > sizeof(GetThreadsResponse))
-		? (respData.size() - sizeof(GetThreadsResponse)) / sizeof(ThreadInfo) : 0;
-	if (count > maxItems) { if (error) *error = detail; return result; }
-
-	result.reserve(count);
-	for (uint32_t i = 0; i < count; i++) {
-		result.push_back({infos[i].id, std::string(infos[i].name, strnlen_s(infos[i].name, sizeof(infos[i].name)))});
+	result.reserve(header.count);
+	for (uint32_t i = 0; i < header.count; ++i) {
+		ThreadInfo info{};
+		std::memcpy(&info, respData.data() + sizeof(header) + static_cast<size_t>(i) * sizeof(info), sizeof(info));
+		const auto* end = static_cast<const char*>(std::memchr(info.name, '\0', sizeof(info.name)));
+		if (!end) {
+			result.clear();
+			if (error) *error = "GetThreads: malformed list (unterminated thread name)";
+			return result;
+		}
+		result.push_back({info.id, std::string(info.name, static_cast<size_t>(end - info.name))});
 	}
 	return result;
 }
@@ -1102,24 +1138,42 @@ std::vector<ModuleEntry> DebugSession::GetModules(std::string* error) {
 	std::vector<uint8_t> respData;
 	std::string detail;
 	if (error) error->clear();
+	// The capability is authoritative: an unadvertised command is refused,
+	// never reported as an empty list.
+	if (!backendInfo_.Supports(IpcCommand::GetModules)) {
+		if (error) *error = "GetModules: request unsupported by backend (not advertised)";
+		return result;
+	}
 	if (!ReceiveBackendReply(IpcCommand::GetModules, nullptr, 0, respData, "GetModules", detail)) {
 		if (error) *error = detail;
 		return result;
 	}
 
-	if (respData.size() < sizeof(GetModulesResponse)) { if (error) *error = detail; return result; }
-	auto* resp = reinterpret_cast<const GetModulesResponse*>(respData.data());
-	auto* infos = reinterpret_cast<const ModuleInfo*>(respData.data() + sizeof(GetModulesResponse));
+	// The whole list or nothing: the count must match the payload exactly and
+	// every name and path must end inside its field.
+	GetModulesResponse header{};
+	if (respData.size() < sizeof(header)) { if (error) *error = detail; return result; }
+	std::memcpy(&header, respData.data(), sizeof(header));
+	const size_t payloadSize = respData.size() - sizeof(header);
+	if (payloadSize % sizeof(ModuleInfo) != 0 || header.count != payloadSize / sizeof(ModuleInfo)) {
+		if (error) *error = "GetModules: incomplete or malformed list (count does not match the payload)";
+		return result;
+	}
 
-	uint32_t count = resp->count;
-	const size_t maxItems = (respData.size() > sizeof(GetModulesResponse))
-		? (respData.size() - sizeof(GetModulesResponse)) / sizeof(ModuleInfo) : 0;
-	if (count > maxItems) { if (error) *error = detail; return result; }
-
-	result.reserve(count);
-	for (uint32_t i = 0; i < count; i++) {
-		result.push_back({std::string(infos[i].name, strnlen_s(infos[i].name, sizeof(infos[i].name))),
-			std::string(infos[i].path, strnlen_s(infos[i].path, sizeof(infos[i].path))), infos[i].baseAddress, infos[i].size});
+	result.reserve(header.count);
+	for (uint32_t i = 0; i < header.count; ++i) {
+		ModuleInfo info{};
+		std::memcpy(&info, respData.data() + sizeof(header) + static_cast<size_t>(i) * sizeof(info), sizeof(info));
+		const auto* nameEnd = static_cast<const char*>(std::memchr(info.name, '\0', sizeof(info.name)));
+		const auto* pathEnd = static_cast<const char*>(std::memchr(info.path, '\0', sizeof(info.path)));
+		if (!nameEnd || !pathEnd) {
+			result.clear();
+			if (error) *error = "GetModules: malformed list (unterminated module name or path)";
+			return result;
+		}
+		result.push_back({std::string(info.name, static_cast<size_t>(nameEnd - info.name)),
+			std::string(info.path, static_cast<size_t>(pathEnd - info.path)),
+			info.baseAddress, info.size});
 	}
 	return result;
 }
@@ -1830,8 +1884,8 @@ DebugSession::TraceBasicBlocksResult DebugSession::TraceBasicBlocks(
 	size_t headerSize = header->headerSize;
 	result.responseHeaderSize = header->headerSize;
 	auto requiredSize = [&](size_t candidate) {
-		uint32_t registerEventCount = candidate >= kTraceBasicBlocksResponseV4Size ?
-			header->registerEventCount : 0;
+		uint32_t registerEventCount = candidate >= kTraceBasicBlocksResponseV4Size &&
+			data.size() >= kTraceBasicBlocksResponseV4Size ? header->registerEventCount : 0;
 		return candidate +
 		static_cast<size_t>(header->blockCount) * sizeof(TraceBasicBlockEntry) +
 		static_cast<size_t>(header->edgeCount) * sizeof(TraceBasicBlockEdgeEntry) +

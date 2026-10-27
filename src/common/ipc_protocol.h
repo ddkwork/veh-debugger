@@ -66,6 +66,7 @@ enum class IpcCommand : uint32_t {
 	SetRegisters           = 0x0025,
 	IsThreadStopped        = 0x0026,
 	FreezeThread           = 0x0027,  // user freeze/thaw that survives continue
+	GetProcesses           = 0x0028,  // VM-scoped guest OS process snapshot
 
 	// Memory
 	ReadMemory             = 0x0030,
@@ -301,6 +302,21 @@ struct GetThreadsResponse {
 	uint32_t  count;
 	// followed by `count` ThreadInfo structs
 };
+
+// One complete guest OS process snapshot; names are bounded raw image-name bytes.
+struct GuestProcessInfo {
+	uint32_t pid;
+	uint32_t addressBits;
+	char     name[64];
+};
+static_assert(sizeof(GuestProcessInfo) == 72);
+
+struct GetProcessesResponse {
+	IpcStatus status;
+	uint32_t  count;
+	// followed by exactly `count` GuestProcessInfo structs on success
+};
+static_assert(sizeof(GetProcessesResponse) == 8);
 
 // Stack frame
 struct StackFrameInfo {

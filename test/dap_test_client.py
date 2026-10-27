@@ -71,6 +71,7 @@ class DapClient:
         self.proc = subprocess.Popen(
             [adapter, *adapter_args], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, bufsize=0,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         self.seq = 0
         self.messages = queue.Queue()

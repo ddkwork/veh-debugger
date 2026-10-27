@@ -50,7 +50,7 @@ int wmain(int argc, wchar_t** argv) {
     }
     if (mode == L"early-exit") return 37;
     const bool machineMode=mode.rfind(L"machine",0)==0;
-    const bool vmMode=mode.rfind(L"vm",0)==0||machineMode;uint32_t vmState=2;
+    const bool vmMode=mode.rfind(L"vm",0)==0||machineMode;uint32_t vmState=2,detachFailures=0;
     uint32_t continueRequests = 0, pauseRequests = 0;
     uint32_t fixtureBreakpointId = 0;
     if ((!pid&&!machineMode)||name.empty()||(machineMode&&pidProvided)) return 2;
@@ -74,7 +74,10 @@ int wmain(int argc, wchar_t** argv) {
             for (auto op : {veh::IpcCommand::GetCapabilities, veh::IpcCommand::GetTargetInfo, veh::IpcCommand::GetThreads,
                             veh::IpcCommand::ReadMemory, veh::IpcCommand::Heartbeat, veh::IpcCommand::Detach})
                 veh::SetCommandSupported(caps.commands, op);
+            if(mode.rfind(L"modules-",0)==0||mode.rfind(L"reply-",0)==0) // modes that serve GetModules advertise it
+                veh::SetCommandSupported(caps.commands,veh::IpcCommand::GetModules);
             if(vmMode) {
+                veh::SetCommandSupported(caps.commands,veh::IpcCommand::GetProcesses);
                 veh::SetCommandSupported(caps.commands,veh::IpcCommand::ControlVirtualMachine);
                 veh::SetCommandSupported(caps.commands,veh::IpcCommand::TraceVirtualCpu);
             }
@@ -137,14 +140,58 @@ int wmain(int argc, wchar_t** argv) {
                 veh::TraceRegisterResponse response{}; response.status = veh::IpcStatus::Ok;
                 if (!reply(pipe, header.command, response)) break;
             } else if (!reply(pipe, header.command, veh::IpcStatus::Ok)) break;
+        } else if (command == veh::IpcCommand::GetProcesses) {
+            if(!vmMode){if(!reply(pipe,header.command,veh::IpcStatus::Unsupported))break;continue;}
+            if(!bytes.empty()){if(!reply(pipe,header.command,veh::IpcStatus::InvalidArgs))break;continue;}
+            if(mode==L"machine-process-error"){
+                if(!reply(pipe,header.command,veh::IpcStatus::Unsupported))break;
+                continue;
+            }
+            struct {veh::GetProcessesResponse header;veh::GuestProcessInfo entries[2];} processes{};
+            processes.header.status=veh::IpcStatus::Ok;processes.header.count=2;
+            processes.entries[0].pid=4;processes.entries[0].addressBits=64;
+            strcpy_s(processes.entries[0].name,"System");
+            processes.entries[1].pid=4242;processes.entries[1].addressBits=
+                mode==L"machine-process-invalid"?16:32;
+            strcpy_s(processes.entries[1].name,"sample32.exe");
+            const auto length=mode==L"machine-process-short"
+                ?sizeof(processes.header)+sizeof(processes.entries[0]):sizeof(processes);
+            if(!send(pipe,header.command,&processes,static_cast<uint32_t>(length)))break;
         } else if (command == veh::IpcCommand::GetThreads) {
+            if(mode==L"machine-thread-error") {
+                if(!reply(pipe,header.command,veh::IpcStatus::Unsupported))break;
+                continue;
+            }
             struct { veh::GetThreadsResponse header; veh::ThreadInfo thread; } threads{};
-            threads.header.status = veh::IpcStatus::Ok; threads.header.count = 1; threads.thread.id = 77;
+            threads.header.status = veh::IpcStatus::Ok;
+            threads.header.count = mode==L"machine-thread-short"?2:1;
+            threads.thread.id = 77;
             if (mode == L"silent-detach" || mode == L"late-detach" || mode == L"host-cap")
                 sprintf_s(threads.thread.name, "fixture-agent:%lu", GetCurrentProcessId());
             if (mode == L"trace") strcpy_s(threads.thread.name,
                 continueRequests || pauseRequests ? "unexpected-resume-or-pause" : "untouched");
+            if(mode==L"machine-thread-name")std::memset(threads.thread.name,'A',sizeof(threads.thread.name));
             if (!reply(pipe, header.command, threads)) break;
+        } else if (command == veh::IpcCommand::GetModules) {
+            if(mode==L"modules-error") {
+                veh::GetModulesResponse response{veh::IpcStatus::Unsupported,0};
+                if(!reply(pipe,header.command,response))break;
+                continue;
+            }
+            if(mode==L"modules-empty") {
+                veh::GetModulesResponse response{veh::IpcStatus::Ok,0};
+                if(!reply(pipe,header.command,response))break;
+                continue;
+            }
+            struct {veh::GetModulesResponse header;veh::ModuleInfo module;} modules{};
+            modules.header.status=veh::IpcStatus::Ok;
+            modules.header.count=mode==L"modules-short"?2:1;
+            modules.module.baseAddress=0x1000;modules.module.size=0x1000;
+            strcpy_s(modules.module.name,"sample.dll");
+            strcpy_s(modules.module.path,"C:\\sample.dll");
+            if(mode==L"modules-name")
+                std::memset(modules.module.name,'A',sizeof(modules.module.name));
+            if(!reply(pipe,header.command,modules))break;
         } else if (command == veh::IpcCommand::ReadMemory && bytes.size() == sizeof(veh::ReadMemoryRequest)) {
             veh::ReadMemoryRequest request{}; memcpy(&request, bytes.data(), sizeof(request));
             if (request.size > 4096) { reply(pipe, header.command, veh::IpcStatus::InvalidArgs); continue; }
@@ -193,6 +240,10 @@ int wmain(int argc, wchar_t** argv) {
         } else if (command == veh::IpcCommand::Detach) {
             if (mode == L"silent-detach") continue;
             if (mode == L"late-detach") Sleep(4500);
+            if(mode==L"detach-three-errors"&&detachFailures++<3) {
+                if(!reply(pipe,header.command,veh::IpcStatus::Error))break;
+                continue;
+            }
             reply(pipe, header.command, veh::IpcStatus::Ok); break;
         } else if (!reply(pipe, header.command, veh::IpcStatus::Unsupported)) break;
     }

@@ -9,6 +9,7 @@ These bounded command-line helpers are the preferred way to reproduce and valida
 | `tools/run_tests.py` | Runs every `test/test_*.py` file in parallel (`--jobs`, longest first from `test/.test_durations.json`) with a per-file timeout, prints durations, flags exit-0 runs that report FAIL, skips `# requires: x64` files on an x86 build and `# slow` files with `--quick`, and cleans up exactly the processes each file started (parent chain + creation time, so reused pids are never adopted). |
 | `test/test_remote_transport.py` | Exercises resident TCP/TLS authentication, IPC routing, late/missing detach replies, dead-agent recovery, startup exit/Win32 and structured common error diagnostics (including invalid-record fallback), launch width/initial-thread metadata and retry recovery, and real DLL lifecycle reply draining; removes its owned certificate, secret and processes. See [remote transport](REMOTE_TRANSPORT.md). |
 | `test/mcp_test_client.py` | Shared timeout-aware MCP stdio client. It bounds captured diagnostics and terminates only processes it started. |
+| `test/dap_test_client.py`, `test/test_dap_thread_errors.py`, `test/test_dap_guest_attach.py` | Bounded DAP stdio client; no-attach error and synthetic external guest attach, scope/identity validation, capability-gated command routing, rejection and acknowledged disconnect retry tests. The adapter runs without opening a console window. `test/test_vm_attach.py` covers malformed guest thread-list IPC through MCP. |
 | `tools/run_mcp_scenario.py` | Runs 1-500 calls from a JSON scenario, supports named result references, stops on errors by default, and optionally writes a new report without overwriting. |
 | `tools/validate_trace_output.py` | Validates exported trace JSON/JSONL ordering, thread ownership, counts, hashes, and optional `.vtc` code-version references. |
 | `tools/read_trace_event_stream.py` | Validates a portable `.vte` ordered-event artifact and converts its interleaved block/edge, memory, and register records to JSON Lines. |
@@ -183,6 +184,15 @@ py -3 tools/run_ipc_compat_matrix.py --old-build-dir <old-build> --new-build-dir
 
 The parity runner invokes the architecture-sensitive integration suite for each build root. The IPC runner verifies that ordinary tracing remains compatible in both old/new directions and that extensions unsupported by an older injected DLL fail explicitly rather than corrupting response layouts.
 
+## Kernel-stub protocol regression
+
+`py -3 tools/run_tests.py test_kernel_debug_protocol.py --jobs 1 --timeout 30`
+uses a synthetic localhost GDB RSP peer with the shared bounded MCP client.
+It checks unsolicited stops, NUL-terminated packets, console output, short
+register replies, interrupt fallback and safe detach of execution/data
+breakpoints. Cleanup rejection must retain the session and prevent detach;
+retry must remove each original kind/size before sending `D`. No VM is used.
+
 ## External guest targets
 
 For a backend whose PIDs belong to an analyzed VM, set `target_scope: "guest"`
@@ -192,21 +202,40 @@ use a distinct entry per VM. Scope defaults to `host` for existing backends.
 Guest peers must advertise `kCapGuestTarget` and implement `GetTargetInfo`
 (empty request, exact 16-byte response: status, scope, PID, addressBits).
 The frontend accepts only matching guest scope/PID and 32 or 64 address bits.
+`test/test_vm_attach.py` also checks a synthetic VM-scoped `GetProcesses`
+response through `veh_toolbox` and `veh_batch`, including malformed length,
+invalid width and explicit Unsupported responses.
 It opens no host process handle for guest targets, installs no host PID monitor,
 and uses backend-provided width for disassembly. Guest event ownership is the
 authenticated backend's responsibility, not a host Toolhelp lookup. Backend
 reuse requires identical path, arguments and scope. Guest `veh_launch` is
 explicitly unsupported until guest process creation and stopOnEntry are wired.
 
+DAP uses `targetScope="guest"`, `processId`, an absolute `agent` and optional
+`agentArgs`. It validates the pipe peer and guest metadata, then gates command
+routing on backend capabilities. Control includes continue/pause, instruction
+steps and step out; memory, breakpoint, symbol and inspection commands require
+the corresponding advertised IPC commands. Source/function breakpoints use
+backend symbol resolution. Stops name the selected thread and do not claim all
+threads stopped. Guest launch and `stopOnModuleLoad` remain unsupported.
+
 `py -3 tools/run_tests.py test_guest_backend.py --jobs 1 --timeout 60` builds on
 the host-only `guest_backend_fixture` target to check PID collisions, metadata
 failures, registered scope, bitness and unsupported pause/terminate handling.
   Query diagnostics cover backend status rejection, truncated versus valid empty
-  lists, no-hit traces and batch error parity. It also
+  lists (thread and module lists must match their payload exactly, names
+  terminated), direct/batch module-list status, no-hit traces and batch error
+  parity. It also
 checks immediate step refusals and zero-call hypervisor traces without automatic
-Continue/Pause, using the same synthetic fixture rather than a real VM.
-Attach/launch replace sessions and remain excluded from batch and breakpoint
-actions; existing inspect commands retain their ordinary batch/action routes.
+Continue/Pause, using the same synthetic fixture rather than a real VM. The
+fixture also returns three Detach errors before success to check that direct
+detach and attach/launch replacement keep the prior session until the backend
+acknowledges cleanup.
+A first top-level `veh_batch` step can attach/launch an unattached session;
+repeated/nested batches and breakpoint actions cannot replace sessions.
+Inspect commands retain their ordinary batch/action routes. `veh_processes`
+also uses the shared dispatcher for direct, toolbox and batch calls; VM-scoped
+sessions have no process breakpoint actions.
 
 `py -3 -B test/test_virtual_machine.py` verifies VM-scope MCP behavior using a
 synthetic host fixture: direct/toolbox parity, exact64-bit timestamp strings,

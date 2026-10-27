@@ -229,6 +229,30 @@ npm run compile
 ```
 - `processId`: 대상 프로세스 PID (작업 관리자에서 확인)
 
+**외부 게스트 프로세스에 DAP 연결**
+
+```json
+{
+    "type": "veh",
+    "request": "attach",
+    "name": "Guest process",
+    "targetScope": "guest",
+    "processId": 1234,
+    "agent": "C:\\path\\to\\guest-agent.exe",
+    "agentArgs": ["--vm", "configured-vm"]
+}
+```
+
+어댑터는 agent를 `--pid <guest PID> --pipe <고유 파이프>`로 시작하고,
+연결 상대의 프로세스 ID와 게스트 범위·PID·32/64비트 주소 폭을 확인합니다.
+게스트 DAP는 백엔드가 광고한 명령에 따라 스레드·메모리·레지스터 조회,
+메모리 쓰기, 계속·정지, 명령어 단위 스텝·step out, 실행·데이터 중단점,
+식 평가·변수 변경·종료를 지원합니다. 소스·함수 중단점은 백엔드의 심볼 해석을
+사용하며, 미지원 명령은 오류를 반환합니다. 정지 이벤트는 선택된 스레드만
+멈췄다고 표시합니다. 게스트 프로세스 생성(`veh_launch`/DAP `launch`)과
+`stopOnEntry`는 아직 미지원이므로 기존 프로세스에 attach해야 합니다.
+`stopOnModuleLoad`는 게스트 DAP 연결에서 사용할 수 없습니다.
+
 ### 2. TCP 모드 (로컬)
 
 어댑터를 별도 프로세스로 실행한 뒤 DAP 클라이언트에서 TCP로 연결:
@@ -350,9 +374,10 @@ DAP의 게스트 연결 설정은 추가하지 않습니다. 실행 중 서버�
 |------|------|------|
 | `veh_toolbox` | `operation, tool?, arguments?, profile?, query?, schema_handle?` | 현재 프로필에 eager 노출되지 않은 도구를 검색·설명·호출하는 lazy gateway. `describe`가 반환한 `schema_handle`을 재사용하면 변경 없음만 짧게 확인한다. |
 | `veh_virtual_machine` | `operation, cpu?, max_instructions?, duration_ms?, cpl_mask?, cr3_roots?, rip_begin?, rip_end?` | 명시적 VM 전체 제어·정지 상태 vCPU 트레이스. 수동 호출 전용 |
+| `veh_processes` | - | 지원하는 게스트/VM 백엔드에서 OS 프로세스 목록(PID, 주소 폭, 짧은 이미지명)을 한 스냅샷으로 조회. 기본 프로필에선 `veh_toolbox`로 호출 |
 | `veh_attach` | `pid?, backend?/agent?, agent_args?, target_scope?` | VEH 주입 또는 외부 백엔드 연결. VM PID는 `target_scope="guest"`와 백엔드 검증 필요. VM 자체 연결은 pid를 생략합니다. |
 | `veh_launch` | `program, args?, stopOnEntry?, cwd?, env?, backend?/agent?, target_scope?` | 호스트 프로세스 생성·연결. `cwd`/`env` 지원. 게스트 launch/stopOnEntry는 미지원이며 기존 세션을 보존하고 거부 |
-| `veh_detach` | - | 디버거 분리 (타겟은 계속 실행) |
+| `veh_detach` | - | 디버거 분리 (타겟은 계속 실행). 백엔드 정리 실패 시 오류를 반환하고 세션을 유지해 재시도 가능 |
 | `veh_terminate` | `exitCode?` | 타겟을 **내부에서** 강제 종료 (주입된 DLL이 자기 프로세스에 `TerminateProcess` 호출). 외부 `taskkill`/`OpenProcess`를 막는 자기보호 타겟(deny-DACL/상위 무결성)도 확실히 종료 -- 프로세스 자기 핸들은 항상 종료 권한 보유. 종료 후 자동 detach. `WM_CLOSE->detach->taskkill` 수순 대체 |
 | `veh_set_breakpoint` | `address, condition?, hitCondition?, logMessage?, action?` | 소프트웨어 BP. `action`으로 히트 시 자동 실행 (veh_batch 형식) |
 | `veh_remove_breakpoint` | `id` | 소프트웨어 BP 제거 |
@@ -597,4 +622,7 @@ VM 자체에 연결할 때는 외부 백엔드를 VM 범위로 등록한 뒤
 `--pipe`와 설정 인자를 받고, 프로세스 agent에만 `--pid`도 전달됩니다.
 `veh_virtual_machine`으로 VM 전체 제어와 제한된 가상 CPU 기록을 요청합니다.
 물리 메모리 읽기·쓰기는 capability에 따라 제공하며 VM 범위 검색·덤프는 미지원입니다.
+지원 백엔드에 VM 범위로 연결한 뒤 `veh_processes`로 게스트 PID를 찾고,
+`veh_attach(target_scope="guest", pid=...)`로 해당 프로세스에 연결합니다.
+짧은 이미지명에 포함된 비 ASCII 바이트는 `\\xNN`으로 표시합니다.
 게스트 프로세스에 연결하는 기존 `target_scope="guest"`는 검증된 비영 PID를 사용합니다.

@@ -42,6 +42,7 @@ bool PipeClient::AsyncReadExact(void* buf, DWORD size, DWORD timeoutMs) {
 			totalRead += bytesRead;
 		} else {
 			CancelIoEx(pipe_, &ov);
+			{ DWORD drained = 0; (void)GetOverlappedResult(pipe_, &ov, &drained, TRUE); }
 			CloseHandle(ov.hEvent);
 			// CancelIoEx/CloseHandle가 GetLastError()를 덮어쓰므로
 			// 호출자가 타임아웃과 실제 오류를 구분할 수 있도록 명시적으로 설정
@@ -86,6 +87,7 @@ bool PipeClient::AsyncWriteExact(const void* buf, DWORD size, DWORD timeoutMs) {
 			totalWritten += bytesWritten;
 		} else {
 			CancelIoEx(pipe_, &ov);
+			{ DWORD drained = 0; (void)GetOverlappedResult(pipe_, &ov, &drained, TRUE); }
 			CloseHandle(ov.hEvent);
 			return false;
 		}
@@ -104,6 +106,7 @@ bool PipeClient::Connect(uint32_t targetPid, int timeoutMs) {
 	const std::wstring pipeName = pipeName_.empty() ? GetPipeName(targetPid) : pipeName_;
 
 	stopEvent_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+	{ std::lock_guard<std::mutex> lock(responseMutex_); desynced_ = false; }
 
 	auto start = std::chrono::steady_clock::now();
 	while (true) {
@@ -191,6 +194,7 @@ bool PipeClient::SendAndReceive(IpcCommand cmd,
 	std::vector<uint8_t>& response, int timeoutMs,
 	PipeExchangeDiagnostics* diagnostics)
 {
+	if (timeoutMs > 0 && timeoutMs < minimumTimeoutMs_) timeoutMs = minimumTimeoutMs_;
 	auto report = [&](PipeExchangeFailure failure, DWORD systemError = ERROR_SUCCESS,
 			uint32_t advertisedPayloadSize = 0) {
 		if (!diagnostics) return;
@@ -200,6 +204,16 @@ bool PipeClient::SendAndReceive(IpcCommand cmd,
 	};
 	report(PipeExchangeFailure::None);
 	std::lock_guard<std::mutex> sendLock(sendReceiveMutex_);
+	// 요청 뮤텍스를 잡은 뒤 확인한다: 앞선 요청의 타임아웃이 그 사이에 설정할 수 있다.
+	{
+		std::lock_guard<std::mutex> lock(responseMutex_);
+		// Detach/Shutdown 은 허용한다: 늦은 응답은 명령이 다르면 이 요청을 충족할 수 없고,
+		// 막으면 오염된 연결을 정리할 길이 없다.
+		if (desynced_ && cmd != IpcCommand::Detach && cmd != IpcCommand::Shutdown) {
+			report(PipeExchangeFailure::SendFailed, ERROR_INVALID_STATE);
+			return false;
+		}
+	}
 	struct RequestInFlightGuard {
 		std::mutex& mutex;
 		bool& active;
@@ -222,6 +236,9 @@ bool PipeClient::SendAndReceive(IpcCommand cmd,
 
 		IpcHeader respHdr;
 		if (!AsyncReadExact(&respHdr, sizeof(respHdr), timeoutMs)) {
+			const DWORD error = GetLastError();
+			{ std::lock_guard<std::mutex> lock(responseMutex_); desynced_ = true; }
+			SetLastError(error);
 			report(PipeExchangeFailure::HeaderReadFailed, GetLastError());
 			return false;
 		}
@@ -235,6 +252,9 @@ bool PipeClient::SendAndReceive(IpcCommand cmd,
 		response.resize(respHdr.payloadSize);
 		if (respHdr.payloadSize > 0) {
 			if (!AsyncReadExact(response.data(), respHdr.payloadSize, timeoutMs)) {
+				const DWORD error = GetLastError();
+				{ std::lock_guard<std::mutex> lock(responseMutex_); desynced_ = true; }
+				SetLastError(error);
 				report(PipeExchangeFailure::PayloadReadFailed, GetLastError(), respHdr.payloadSize);
 				return false;
 			}
@@ -269,6 +289,7 @@ bool PipeClient::SendAndReceive(IpcCommand cmd,
 	waitingForResponse_ = false;
 
 	if (!ok) {
+		desynced_ = true;
 		LOG_ERROR("SendAndReceive timeout for cmd 0x%04X (%dms)", static_cast<uint32_t>(cmd), timeoutMs);
 		report(PipeExchangeFailure::WaitTimeout, WAIT_TIMEOUT, responseAdvertisedPayloadSize_);
 		return false;
@@ -416,7 +437,7 @@ void PipeClient::ReaderThread() {
 	// 종료 시 대기 중인 SendAndReceive 깨우기 (aborted 플래그로 실패 전달)
 	{
 		std::lock_guard<std::mutex> lock(responseMutex_);
-		if (waitingForResponse_) {
+		if (waitingForResponse_ && !responseReady_) {
 			if (responseFailure_ == PipeExchangeFailure::None) {
 				responseFailure_ = PipeExchangeFailure::ReaderAborted;
 				responseSystemError_ = GetLastError();

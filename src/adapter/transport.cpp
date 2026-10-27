@@ -60,9 +60,10 @@ bool StdioTransport::Start() {
 
 void StdioTransport::Stop() {
 	running_ = false;
-	// stdin을 닫아서 _read가 반환되게 함
-	_close(_fileno(stdin));
 	if (readThread_.joinable()) {
+		// Closing a CRT fd alone does not wake a blocked Windows pipe read.
+		CancelSynchronousIo(readThread_.native_handle());
+		_close(_fileno(stdin));
 		readThread_.join();
 	}
 }

@@ -16,6 +16,7 @@ target_link_libraries(veh-debug-adapter PRIVATE
     Zydis
     ws2_32
     dbghelp
+    bcrypt
 )
 
 target_compile_definitions(veh-debug-adapter PRIVATE

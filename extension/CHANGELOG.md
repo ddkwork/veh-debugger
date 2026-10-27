@@ -2,7 +2,22 @@
 
 ## Unreleased
 
+### Added
+- **External guest debugging (DAP)** -- `attach` accepts `targetScope="guest"`, an absolute `agent` path and optional `agentArgs`, validates the pipe peer and guest PID/address width, and routes operations through backend IPC. Advertised commands enable continue/pause, instruction steps and step out, execution/data breakpoints, memory access, registers, modules, evaluation and termination. Source/function breakpoints use backend symbol resolution. Unsupported requests fail explicitly; guest launch and `stopOnModuleLoad` remain unsupported. Guest stop events identify the selected thread without claiming every thread stopped.
+- **Guest process discovery (MCP)** -- `veh_processes` asks a capable guest or VM backend for one complete OS process snapshot, returning PIDs, address widths and escaped short image names. It can be called through `veh_toolbox` or `veh_batch`; unsupported backends and malformed responses fail explicitly. Use a returned PID with `veh_attach(target_scope="guest")`; guest launch/stopOnEntry is still pending.
+
+### Changed
+- **Step-out completion (MCP)** -- `veh_step_out` waits for the matching thread to stop and returns its instruction pointer. `timeout` accepts 1-300 seconds (default 30); timing out does not cancel execution.
+- **Guest checkpoint and capture routing** -- checkpoint regions use the backend memory map instead of host process APIs. Guest targeted captures omit TEB capture by default; explicit unsupported TEB requests still fail. Local guest/VM backend exchanges have a 30-second timeout floor.
+
 ### Fixed
+- **Acknowledged backend detach (MCP/DAP)** -- local MCP backends and guest DAP sessions must return `Ok` before detach reports success. Failed replies retain the session, and MCP attach/launch cannot replace it. TCP detach retains the resident-work closure confirmation. Complete replies survive an immediate peer disconnect.
+- **Module-list backend errors** -- MCP `veh_modules` distinguishes a valid empty module list from an unsupported, failed, truncated, or unterminated IPC response. Direct and batch calls return the same error semantics, including for WoW64 guest backends that do not advertise module enumeration.
+- **DAP shutdown and memory bounds** -- shutdown wakes and joins the transport reader without polling or missed wakeups. Memory/disassembly requests reject address overflow and ranges outside a 32-bit guest address space; thread termination failures report failure.
+- **Thread-list backend errors** -- DAP `threads` now rejects unavailable, failed, truncated, or unterminated IPC results instead of inventing a Main Thread. MCP `veh_threads` also reports incomplete or malformed backend replies as errors rather than publishing a partial list.
+- **Pipe request lifetime and stale replies** -- canceled overlapped I/O completes before its buffers are released. A timed-out connection rejects further ordinary requests so late replies cannot satisfy another request; detach/shutdown remain available for cleanup. Unreadable conditional-breakpoint memory stops safely instead of being compared as zero, and legacy basic-block trace replies no longer read beyond their versioned header.
+- **Guest stop reporting** -- pause events retain the stopped thread ID. A cached breakpoint stop is reused only while the thread remains at that address.
+- **VirtualBox kernel-stub compatibility** -- GDB RSP handles unsolicited stops, trailing NULs, shorter register packets and DBGC console output. Register writes use the console when required; interrupt and lost-stop recovery handle delayed stub responses. Reply waits remain bounded, and ordinary acknowledgements cannot be mistaken for stops. Detach removes owned execution/data breakpoints using their original kind and size, retaining the session if cleanup fails.
 - **Host launch metadata** -- MCP `veh_launch` includes the target address width and the initial main-thread ID when available, for both local and TCP launches. The remote runner forwards the ID it received at process creation; older runners remain compatible and omit unavailable thread metadata.
 - **Backend-independent breakpoint kinds** -- MCP stop results use the registered breakpoint kind instead of guessing from numeric ID ranges. External hardware/data breakpoints with low IDs report `hardware`, software breakpoints with high IDs report `software`, and unknown IDs omit the kind.
 

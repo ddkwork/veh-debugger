@@ -75,7 +75,7 @@ std::string MonitorText(KernelDebugClient& kd, const std::string& command)
 {
 	std::string reply;
 	std::vector<uint8_t> text(command.begin(), command.end());
-	if (!kd.Request("qRcmd," + HexBytes(text), &reply) || reply.empty() || reply == "OK")
+	if (!kd.Monitor(HexBytes(text), &reply) || reply.empty())
 		return "";
 	const auto bytes = FromHex(reply);
 	return std::string(bytes.begin(), bytes.end());
@@ -107,6 +107,8 @@ json McpServer::ToolKdConnect(const json& args)
 	const std::string address = args.value("address", "");
 	if (address.empty())
 		return {{"error", "address required (pipe name, COM port, host:port or ip:port)"}};
+	if (kd_)
+		(void)ToolKdDisconnect(json::object()); // its breakpoints out, then D
 	kd_.reset();
 	std::string error;
 	auto link = OpenKdTransport(transport, address, JsonUint32(args, "baud", 115200), &error);
@@ -118,6 +120,13 @@ json McpServer::ToolKdConnect(const json& args)
 		return {{"error", error}};
 	kd_ = std::move(client);
 	kd_breakpoints_.clear();
+	// VirtualBox 7.2's stub mis-sizes the P value (RTStrConvertHexBytes gets
+	// the digit count as the byte count), sends no reply and drops the link;
+	// it has no G. Its DBGC console's 'r' prints rip= and sets registers.
+	// It also drops the last byte of every qRcmd command (dbgcEvalCommand gets
+	// the decoded length - 1: 'r' was an unknown command ''), so DBGC
+	// commands get a trailing space.
+	kd_dbgc_ = MonitorText(*kd_, "r ").find("rip=") != std::string::npos;
 	std::string threads, more;
 	kd_->Request("qfThreadInfo", &threads);
 	json cpus = json::array();
@@ -144,7 +153,21 @@ json McpServer::ToolKdDisconnect(const json&)
 	std::string reply;
 	if (kd_->running()) {
 		std::string stop;
-		kd_->Interrupt(&stop, 5000);
+		if (!kd_->Interrupt(&stop, 5000))
+			return {{"error", "Could not stop the target for breakpoint cleanup; session retained"}};
+	}
+	// The stub's detach keeps DBGF breakpoints: one hit with no debugger
+	// attached powers the VM off (DBGF waits for an attach, then EM stops).
+	// Remove ours first.
+	for (auto it = kd_breakpoints_.begin(); it != kd_breakpoints_.end();) {
+		const auto [address, type, size] = *it;
+		std::string removed;
+		char packet[64];
+		snprintf(packet, sizeof(packet), "z%c,%llx,%x", type,
+			static_cast<unsigned long long>(address), size);
+		if (!kd_->Request(packet, &removed) || removed != "OK")
+			return {{"error", "Breakpoint cleanup failed; session retained"}, {"address", HexAddr(address)}};
+		it = kd_breakpoints_.erase(it);
 	}
 	const bool ok = kd_->Request("D", &reply) && reply == "OK";
 	kd_.reset();
@@ -184,7 +207,7 @@ json McpServer::ToolKdBreak(const json& args)
 		return KdNotConnected();
 	std::string stop;
 	if (!kd_->Interrupt(&stop, JsonUint32(args, "timeout_ms", 10000)))
-		return {{"error", "the target did not stop"}};
+		return {{"error", "the target did not stop"}, {"diagnostic", kd_->wait_diagnostic()}};
 	return {{"running", false}, {"stop", StopJson(stop)}};
 }
 
@@ -203,8 +226,17 @@ json McpServer::ToolKdStep(const json& args)
 			thread = ":" + stop.substr(t + 7, stop.find(';', t) - t - 7);
 	}
 	for (uint32_t i = 0; i < count; ++i) {
-		if (!kd_->Resume("vCont;s" + thread) || !kd_->WaitStop(&stop, JsonUint32(args, "timeout_ms", 10000)))
-			return {{"error", "step did not complete"}, {"steps", i}};
+		const std::string before = ToolKdRegisters(json::object()).value("rip", "");
+		if (!kd_->Resume("vCont;s" + thread))
+			return {{"error", "link lost"}, {"steps", i}};
+		if (kd_->WaitStop(&stop, JsonUint32(args, "timeout_ms", 10000)))
+			continue;
+		// Live (VirtualBox DBGC, kd_x64 run 203425): the stub acknowledged the
+		// step but sent no stop reply. Ask for the stop reason; the step counts
+		// only if the target is halted at a new RIP.
+		const std::string diagnostic = kd_->wait_diagnostic();
+		if (!kd_->QueryStop(&stop, 3000) || ToolKdRegisters(json::object()).value("rip", "") == before)
+			return {{"error", "step did not complete"}, {"steps", i}, {"diagnostic", diagnostic}};
 	}
 	json regs = ToolKdRegisters(json::object());
 	json out = {{"steps", count}, {"stop", StopJson(stop)}, {"rip", regs.value("rip", "")}};
@@ -226,17 +258,19 @@ json McpServer::ToolKdRegisters(const json& args)
 	if (!KdSelect(args, error))
 		return error;
 	std::string reply;
-	if (!kd_->Request("g", &reply) || reply.size() < 2 * (17 * 8 + 4 + 24))
+	// The general registers and eflags are required; stubs send a varying
+	// number of segment registers after them (VirtualBox: cs and ss).
+	if (!kd_->Request("g", &reply) || reply.size() < 2 * (17 * 8 + 4))
 		return {{"error", "register read failed"}, {"reply", reply.substr(0, 16)}};
 	const auto g = FromHex(reply);
 	json out;
 	for (size_t i = 0; i < 17; ++i)
 		out[kGdbRegs[i]] = HexAddr(Le(g, i * 8, 8));
 	out["rflags"] = HexAddr(Le(g, 17 * 8, 4));
-	for (size_t i = 0; i < 6; ++i)
+	for (size_t i = 0; i < 6 && g.size() >= 17 * 8 + 4 + (i + 1) * 4; ++i)
 		out[kGdbSegs[i]] = HexAddr(Le(g, 17 * 8 + 4 + i * 4, 4));
 	// System state (stub monitor command), when the stub offers it.
-	const std::string extra = MonitorText(*kd_, "regs");
+	const std::string extra = MonitorText(*kd_, kd_dbgc_ ? "regs " : "regs");
 	for (const char* key : { "cr3", "gs_base", "fs_base", "idt", "cpl" }) {
 		const std::string tag = std::string(key) + "=";
 		const size_t at = extra.find(tag);
@@ -266,6 +300,19 @@ json McpServer::ToolKdSetRegister(const json& args)
 	}
 	if (number < 0)
 		return {{"error", "unknown register (rax..r15, rip, rflags)"}};
+	if (kd_dbgc_) {
+		char command[64];
+		snprintf(command, sizeof(command), "r %s = 0x%llx", name == "eflags" ? "rflags" : name.c_str(),
+			static_cast<unsigned long long>(value));
+		const std::string text = MonitorText(*kd_, std::string(command) + " ");
+		std::string reply;
+		char read[8];
+		snprintf(read, sizeof(read), "p%x", number);
+		const auto now = kd_->Request(read, &reply) ? FromHex(reply) : std::vector<uint8_t>{};
+		if (now.size() < size || Le(now, 0, size) != (size == 4 ? (value & 0xFFFFFFFFu) : value))
+			return {{"error", "register write failed"}, {"console", text}};
+		return {{"success", true}, {"name", name}, {"value", HexAddr(value)}};
+	}
 	std::vector<uint8_t> bytes(size);
 	for (size_t i = 0; i < size; ++i)
 		bytes[i] = static_cast<uint8_t>(value >> (8 * i));
@@ -312,7 +359,7 @@ json McpServer::ToolKdMemory(const json& args)
 		const size_t n = (std::min)(size - at, static_cast<size_t>(0x7F0));
 		char head[48];
 		snprintf(head, sizeof(head), "m%llx,%zx", static_cast<unsigned long long>(address + at), n);
-		if (!kd_->Request(head, &reply) || reply.empty() || reply[0] == 'E') {
+		if (!kd_->Request(head, &reply) || reply.empty() || (reply.size() == 3 && reply[0] == 'E')) {
 			if (data.empty())
 				return {{"error", "unreadable"}, {"address", HexAddr(address + at)}, {"reply", reply}};
 			break; // a readable prefix
@@ -337,8 +384,9 @@ json McpServer::ToolKdBreakpoint(const json& args)
 	const std::string action = args.value("action", "list");
 	if (action == "list") {
 		json list = json::array();
-		for (uint64_t a : kd_breakpoints_)
-			list.push_back(HexAddr(a));
+		std::set<uint64_t> addresses;
+		for (const auto& bp : kd_breakpoints_) addresses.insert(std::get<0>(bp));
+		for (uint64_t address : addresses) list.push_back(HexAddr(address));
 		return {{"breakpoints", list}};
 	}
 	if (kd_->running())
@@ -351,16 +399,19 @@ json McpServer::ToolKdBreakpoint(const json& args)
 	snprintf(packet, sizeof(packet), "%c%c,%llx,%x", action == "remove" ? 'z' : 'Z', type,
 		static_cast<unsigned long long>(address), size);
 	std::string reply;
-	if (!kd_->Request(packet, &reply))
-		return {{"error", "no answer"}};
+	// Live (VirtualBox DBGC, kd_x64 run 210451): a z0 right after a breakpoint
+	// stop got no answer within 5 s while the console was still reporting the
+	// event. Z/z are idempotent: ask once more.
+	if (!kd_->Request(packet, &reply) && !kd_->Request(packet, &reply, 10000))
+		return {{"error", "no answer"}, {"trace", kd_->trace()}};
 	if (reply.empty())
 		return {{"error", "breakpoints not supported by this stub"}};
 	if (reply != "OK")
 		return {{"error", "rejected (address not mapped?)"}, {"reply", reply}};
 	if (action == "remove")
-		kd_breakpoints_.erase(address);
+		kd_breakpoints_.erase(std::make_tuple(address, type, size));
 	else
-		kd_breakpoints_.insert(address);
+		kd_breakpoints_.insert(std::make_tuple(address, type, size));
 	return {{"success", true}, {"action", action == "remove" ? "remove" : "add"}, {"address", HexAddr(address)},
 		{"kind", kind}};
 }
@@ -371,7 +422,7 @@ json McpServer::ToolKdMonitor(const json& args)
 		return KdNotConnected();
 	if (kd_->running())
 		return {{"error", "running: veh_kd_break first"}};
-	const std::string text = MonitorText(*kd_, args.value("command", "help"));
+	const std::string text = MonitorText(*kd_, args.value("command", "help") + (kd_dbgc_ ? " " : ""));
 	return {{"output", text}};
 }
 

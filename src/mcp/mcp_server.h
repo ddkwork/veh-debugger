@@ -10,6 +10,7 @@
 #include <unordered_map>
 #include <memory>
 #include <set>
+#include <tuple>
 #include "adapter/transport.h"
 #include "debug_session.h"
 #include "kernel_debug_client.h"
@@ -113,6 +114,7 @@ private:
 	json ToolApic(const json& args);
 	json ToolPci(const json& args);
 	json ToolKernelModules(const json& args);
+	json ToolProcesses(const json& args);
 	json ToolAddressSpace(const json& args);
 	json ToolTransparency(const json& args);
 	json ToolEvent(const json& args);
@@ -181,7 +183,8 @@ private:
 	dap::Transport* transport_ = nullptr;
 	DebugSession session_;
 	std::unique_ptr<KernelDebugClient> kd_;
-	std::set<uint64_t> kd_breakpoints_;
+	std::set<std::tuple<uint64_t, char, uint32_t>> kd_breakpoints_;
+	bool kd_dbgc_ = false; // VirtualBox's DBGC stub: registers are written through its console
 	std::string toolProfile_;
 	const std::vector<ToolDef> tools_ = BuildAllToolsList();
 	std::atomic<bool> running_{false};

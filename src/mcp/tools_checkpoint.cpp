@@ -48,6 +48,25 @@ static std::vector<std::pair<const char*, uint64_t>> CheckpointRegisters(const R
 		{"rip",r.rip},{"eflags",r.rflags}};
 }
 
+// The committed region holding address: VirtualQueryEx for a host target,
+// the backend's QueryMemoryMap for a guest one (a guest PID or handle names
+// no host object).
+static bool CheckpointQueryRegion(DebugSession& session, uint64_t address, MEMORY_BASIC_INFORMATION& mbi) {
+	mbi = {};
+	if (!session.IsGuestTarget())
+		return VirtualQueryEx(session.GetTargetProcess(), reinterpret_cast<LPCVOID>(uintptr_t(address)),
+			&mbi, sizeof(mbi)) && mbi.State == MEM_COMMIT;
+	const auto map = session.QueryMemoryMap(address, address + 1, 1, false);
+	if (!map.ok || map.regions.size() != 1) return false;
+	const auto& r = map.regions[0];
+	if (address < r.baseAddress || address - r.baseAddress >= r.regionSize) return false;
+	mbi.BaseAddress = reinterpret_cast<PVOID>(uintptr_t(r.baseAddress));
+	mbi.AllocationBase = reinterpret_cast<PVOID>(uintptr_t(r.allocationBase));
+	mbi.RegionSize = static_cast<SIZE_T>(r.regionSize);
+	mbi.State = r.state; mbi.Protect = r.protect; mbi.AllocationProtect = r.allocationProtect; mbi.Type = r.type;
+	return mbi.State == MEM_COMMIT;
+}
+
 json McpServer::ToolCheckpointCreate(const json& args) {
 	if (!session_.IsAttached()) return {{"error", NotAttachedMessage()}};
 	uint32_t threadId = JsonUint32(args, "threadId");
@@ -57,6 +76,12 @@ json McpServer::ToolCheckpointCreate(const json& args) {
 	auto registers = session_.GetRegisters(threadId);
 	if (!registers) return {{"error", "failed to capture thread context"}};
 	auto queryEnvironment = [&](CheckpointThreadEnvironment& environment) -> bool {
+		if (session_.IsGuestTarget()) {
+			// The guest TEB and selector bases are not queried through host
+			// objects; the checkpoint keeps registers and memory regions only.
+			environment.wow64 = registers->is32bit;
+			return true;
+		}
 		HANDLE thread = OpenThread(THREAD_QUERY_INFORMATION, FALSE, threadId);
 		if (!thread) return false;
 		using NtQueryInformationThreadFn = LONG(NTAPI*)(HANDLE, ULONG, PVOID, ULONG, PULONG);
@@ -99,6 +124,8 @@ json McpServer::ToolCheckpointCreate(const json& args) {
 	if (args.contains("capture_teb") && !args["capture_teb"].is_boolean())
 		return {{"error", "capture_teb must be a boolean"}};
 	bool captureTeb = args.value("capture_teb", false);
+	if (captureTeb && !environment.teb)
+		return {{"error", "capture_teb is unavailable: the thread's TEB is unknown for this session"}};
 	const size_t explicitRegionCount = regionsArg.size();
 	if (captureTeb) {
 		uint32_t tebSize = JsonUint32(args, "teb_size", 4096);
@@ -116,9 +143,7 @@ json McpServer::ToolCheckpointCreate(const json& args) {
 	const uint64_t checkpointStackPointer = registers->rsp;
 	MEMORY_BASIC_INFORMATION stackMbi{};
 	const bool hasStackMapping = checkpointStackPointer &&
-		VirtualQueryEx(session_.GetTargetProcess(),
-			reinterpret_cast<LPCVOID>(uintptr_t(checkpointStackPointer)),
-			&stackMbi, sizeof(stackMbi)) && stackMbi.State == MEM_COMMIT;
+		CheckpointQueryRegion(session_, checkpointStackPointer, stackMbi);
 	size_t totalBytes = 0;
 	for (size_t requestedIndex = 0; requestedIndex < regionsArg.size(); ++requestedIndex) {
 		const auto& requested = regionsArg[requestedIndex];
@@ -148,8 +173,7 @@ json McpServer::ToolCheckpointCreate(const json& args) {
 				return {{"error", "checkpoint regions must not overlap"}};
 		}
 		MEMORY_BASIC_INFORMATION mbi{};
-		if (!VirtualQueryEx(session_.GetTargetProcess(), reinterpret_cast<LPCVOID>(uintptr_t(address)),
-				&mbi, sizeof(mbi)) || mbi.State != MEM_COMMIT)
+		if (!CheckpointQueryRegion(session_, address, mbi))
 			return {{"error", "checkpoint region is not committed memory"}};
 		uint64_t regionBase = reinterpret_cast<uint64_t>(mbi.BaseAddress);
 		if (address + size > regionBase + mbi.RegionSize)
@@ -240,8 +264,7 @@ json McpServer::ToolCheckpointRestore(const json& args) {
 		const size_t restoreSize = region.bytes.size() - region.restoreOffset;
 		if (!restoreSize) { rollback.emplace_back(); continue; }
 		MEMORY_BASIC_INFORMATION mbi{};
-		if (!VirtualQueryEx(session_.GetTargetProcess(), reinterpret_cast<LPCVOID>(uintptr_t(restoreAddress)),
-				&mbi, sizeof(mbi)) || mbi.State != MEM_COMMIT ||
+		if (!CheckpointQueryRegion(session_, restoreAddress, mbi) ||
 			reinterpret_cast<uint64_t>(mbi.AllocationBase) != region.allocationBase ||
 			mbi.Type != region.type || restoreAddress + restoreSize >
 				reinterpret_cast<uint64_t>(mbi.BaseAddress) + mbi.RegionSize)

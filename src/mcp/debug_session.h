@@ -541,7 +541,7 @@ private:
 	};
 	std::map<uint32_t, RunningAgent> externalAgents_; // target pid -> agent we started
 	BackendInfo backendInfo_;
-	void UseTransport(const std::wstring& pipeName);
+	void UseTransport(const std::wstring& pipeName, int minimumTimeoutMs = 0);
 	bool ConnectExternalAgent(uint32_t pid, const ExternalAgent& agent);
     bool ConnectRemoteWork(uint32_t pid, const ExternalAgent& agent, const LaunchOptions* launch);
     std::string pendingRemoteLaunch_, pendingRemoteRequestId_;

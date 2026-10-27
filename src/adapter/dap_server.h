@@ -84,7 +84,9 @@ private:
 	// Helpers
 	std::string GetDllPath();
 	void ResumeMainThread(uint32_t requestedThreadId = 0);
-	void Cleanup(bool detachOnly = false);
+	void Cleanup(bool detachOnly = false, bool backendDetached = false);
+	bool AttachGuestAgent(const Request& req, std::string& error);
+	bool GuestSupports(IpcCommand command) const;
 
 	Transport* transport_ = nullptr;
 	std::unique_ptr<IIpcTransport> ipcTransport_;
@@ -92,6 +94,8 @@ private:
 	veh::SymbolEngine symbolEngine_;
 	bool symbolEngineReady_ = false;
 	std::atomic<bool> running_{false};
+	std::mutex runMutex_;
+	std::condition_variable runCv_;
 	std::atomic<bool> initialized_{false};
 	std::atomic<bool> configured_{false};
 	std::atomic<int> seq_{1};
@@ -100,6 +104,10 @@ private:
 	uint32_t targetPid_ = 0;
 	HANDLE targetProcess_ = nullptr;
 	bool launchedByUs_ = false;
+	bool guestTarget_ = false;
+	HANDLE guestAgentProcess_ = nullptr;
+	uint8_t guestCommands_[32] = {};
+	uint32_t guestAddressBits_ = 0;
 	bool stopOnEntry_ = false;
 	std::vector<std::string> stopOnModuleLoadPatterns_;  // launch.json "stopOnModuleLoad"
 	uint32_t launchedMainThreadId_ = 0;  // OS 스레드 ID (CREATE_SUSPENDED 상태)

@@ -905,7 +905,11 @@ void McpServer::OnIpcEvent(uint32_t eventId, const uint8_t* payload, uint32_t si
 			std::lock_guard<std::mutex> lock(eventMutex_);
 			pendingEvents_.push({"notifications/logging", {{"level", "info"}, {"logger", "veh-debugger"}, {"data", "Target paused"}}}); SetEvent(eventsReady_);
 		}
-		session_.SignalStop("pause", 0, 0, 0);
+		// The paused thread, so a later Continue can tell the stop is over
+		// (live: a pause stop with thread 0 was returned as a current stop
+		// after the thread had been resumed).
+		const uint32_t tid = size >= sizeof(ThreadEvent) ? reinterpret_cast<const ThreadEvent*>(payload)->threadId : 0;
+		session_.SignalStop("pause", 0, tid, 0);
 		break;
 	}
 	case IpcEvent::ProcessExited: {
@@ -1091,7 +1095,7 @@ std::vector<McpServer::ToolDef> McpServer::BuildAllToolsList() {
 		 }}, {"required", json::array({"program"})}}}}),
 
 		Tool(&McpServer::ToolDetach, "session", 0, false,
-			{{"name", "veh_detach"}, {"description", "Detach debugger from the target process (leaves it running)."},
+			{{"name", "veh_detach"}, {"description", "Detach debugger from the target process. A failed backend cleanup returns an error and retains the session for retry."},
 		 {"inputSchema", {{"type", "object"}, {"properties", json::object()}}}}),
 
 		Tool(&McpServer::ToolTerminate, "session", kLite | kInteractive | kCapture, false,
@@ -1178,9 +1182,10 @@ std::vector<McpServer::ToolDef> McpServer::BuildAllToolsList() {
 		 }}, {"required", json::array({"threadId"})}}}}),
 
 		Tool(&McpServer::ToolStepOut, "session", 0, true,
-			{{"name", "veh_step_out"}, {"description", "Step out (run until current function returns)."},
+			{{"name", "veh_step_out"}, {"description", "Step out (run until current function returns). Waits for completion and returns the new instruction pointer."},
 		 {"inputSchema", {{"type", "object"}, {"properties", {
-			{"threadId", {{"type", "integer"}, {"description", "OS thread ID (from veh_threads)"}}}
+			{"threadId", {{"type", "integer"}, {"description", "OS thread ID (from veh_threads)"}}},
+			{"timeout", {{"type", "integer"}, {"description", "Max seconds to wait for the return (1-300, default: 30)"}}}
 		 }}, {"required", json::array({"threadId"})}}}}),
 
 		Tool(&McpServer::ToolPause, "session", 0, true,
@@ -1239,7 +1244,7 @@ std::vector<McpServer::ToolDef> McpServer::BuildAllToolsList() {
 		 }}}}}),
 
 		Tool(&McpServer::ToolModules, "inspect", 0, true,
-			{{"name", "veh_modules"}, {"description", "List loaded modules (DLLs) in the target process."},
+			{{"name", "veh_modules"}, {"description", "List loaded modules (DLLs) in the target process. Unsupported or failed backend replies return an error, not an empty list."},
 		 {"inputSchema", {{"type", "object"}, {"properties", json::object()}}}}),
 
 		Tool(&McpServer::ToolDisassemble, "inspect", kInteractive, true,
@@ -1509,6 +1514,9 @@ std::vector<McpServer::ToolDef> McpServer::BuildAllToolsList() {
 				{"data", {{"type", "string"}, {"description", "write: hex bytes"}}}
 			 }}}}}),
 
+		Tool(&McpServer::ToolProcesses, "system", 0, true,
+			{{"name", "veh_processes"}, {"description", "List guest OS processes from one backend snapshot (PID, address width, escaped short image name). Needs a guest or VM hypervisor backend."},
+			 {"inputSchema", {{"type", "object"}, {"properties", json::object()}}}}),
 		Tool(&McpServer::ToolKernelModules, "system", 0, true,
 			{{"name", "veh_kernel_modules"}, {"description", "Loaded kernel modules (base, size, path). Needs a hypervisor backend."},
 			 {"inputSchema", {{"type", "object"}, {"properties", {
@@ -1775,7 +1783,7 @@ std::vector<McpServer::ToolDef> McpServer::BuildAllToolsList() {
 	targetedProperties["window"] = {{"type", "object"},
 		{"description", "{before_steps?, after_steps?}; bounds are 0/1 through 100000"}};
 	targetedProperties["environment"] = {{"type", "object"},
-		{"description", "Optional {capture_teb, teb_size, regions}; capture_teb defaults true"}};
+		{"description", "Optional {capture_teb, teb_size, regions}; capture_teb defaults true (false for a guest target, whose TEB the frontend does not know)"}};
 	targetedProperties["output_directory"] = {{"type", "string"},
 		{"description", "MCP-host artifact directory"}};
 	targetedProperties["stop_on_error"] = {{"type", "boolean"},

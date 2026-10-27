@@ -26,6 +26,9 @@ def run():
         assert attached['addressBits'] == 32, attached
         threads = client.tool('veh_threads')
         assert threads['count'] == 1 and threads['threads'][0]['id'] == 77, threads
+        assert 'error' in client.tool('veh_modules'), 'Unsupported modules became an empty list'
+        module_batch = client.tool('veh_batch', {'steps': [{'tool': 'veh_modules', 'args': {}}]})
+        assert module_batch['failed'] == 1 and 'error' in module_batch['results'][0]['result'], module_batch
         assembly = client.tool('veh_disassemble', {'address': '0x1000', 'count': 2})
         assert 'edx' in json.dumps(assembly).lower() and 'inc' in json.dumps(assembly).lower(), assembly
         assert 'error' in client.tool('veh_pause'), 'Unsupported pause reported success'
@@ -112,6 +115,34 @@ def run():
         unknown = client.tool('veh_continue', {'wait': True, 'timeout': 1})
         assert unknown.get('breakpointId') == 7 and 'breakpointType' not in unknown, unknown
         assert client.tool('veh_detach').get('success')
+        for mode in ('modules-ok', 'modules-empty', 'modules-error', 'modules-short', 'modules-name'):
+            attached = client.tool('veh_attach', {**args, 'agent_args': ['--metadata', mode]})
+            assert attached.get('success'), (mode, attached)
+            modules = client.tool('veh_modules')
+            batch = client.tool('veh_batch', {'steps': [{'tool': 'veh_modules', 'args': {}}]})
+            if mode == 'modules-ok':
+                assert modules['count'] == 1 and modules['modules'][0]['name'] == 'sample.dll', modules
+                assert batch['failed'] == 0 and batch['results'][0]['result'] == modules, batch
+            elif mode == 'modules-empty':
+                assert modules == {'modules': [], 'count': 0}, modules
+                assert batch['failed'] == 0 and batch['results'][0]['result'] == modules, batch
+            else:
+                assert 'error' in modules, (mode, modules)
+                assert batch['failed'] == 1 and 'error' in batch['results'][0]['result'], (mode, batch)
+        assert client.tool('veh_detach').get('success')
+        attached = client.tool('veh_attach', {**args, 'agent_args': ['--metadata', 'detach-three-errors']})
+        assert attached.get('success'), attached
+        first_detach = client.tool('veh_detach')
+        assert 'error' in first_detach and 'retained' in first_detach['error'].lower(), first_detach
+        assert client.tool('veh_threads')['count'] == 1, 'Failed detach dropped the guest session'
+        replacement = client.tool('veh_attach', {**args, 'agent_args': ['--metadata', 'wrong-pid']})
+        assert 'error' in replacement and 'detach' in replacement['error'].lower(), replacement
+        assert client.tool('veh_threads')['count'] == 1, 'Failed replacement dropped the guest session'
+        launch = client.tool('veh_launch', {'program': 'nonexistent-owned-fixture.exe'})
+        assert 'error' in launch and 'detach' in launch['error'].lower(), launch
+        assert client.tool('veh_threads')['count'] == 1, 'Failed launch dropped the guest session'
+        assert client.tool('veh_detach').get('success'), 'Fourth detach should release the session'
+        assert 'error' in client.tool('veh_threads'), 'Successful detach kept the guest session'
         for mode in ('wrong-pid', 'bad-width', 'wrong-scope', 'not-found', 'truncated', 'host-cap'):
             result = client.tool('veh_attach', {**args, 'agent_args': ['--metadata', mode]})
             assert 'error' in result, (mode, result)

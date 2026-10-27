@@ -5,8 +5,10 @@
 #include <filesystem>
 #include <sstream>
 #include <algorithm>
+#include <cstring>
 #include <fstream>
 #include <set>
+#include <bcrypt.h>
 
 // VEH_DAP_TRACE: 파일 기반 DAP 디버그 로그 (cmake -DVEH_DAP_TRACE=ON)
 #ifdef VEH_DAP_TRACE
@@ -54,6 +56,48 @@ std::vector<uint8_t> Base64Decode(const std::string& s) {
 	}
 	return result;
 }
+std::wstring Utf8ToWide(const std::string& value) {
+	if (value.empty()) return {};
+	const int size = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+		value.data(), static_cast<int>(value.size()), nullptr, 0);
+	if (size <= 0) return {};
+	std::wstring wide(size, L'\0');
+	if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+		value.data(), static_cast<int>(value.size()), wide.data(), size) != size) return {};
+	return wide;
+}
+
+std::wstring QuoteWindowsArg(const std::wstring& value) {
+	std::wstring result(1, L'"');
+	size_t slashes = 0;
+	for (wchar_t ch : value) {
+		if (ch == L'\\') { ++slashes; continue; }
+		if (ch == L'"') {
+			result.append(slashes * 2 + 1, L'\\');
+			result += ch;
+		} else {
+			result.append(slashes, L'\\');
+			result += ch;
+		}
+		slashes = 0;
+	}
+	result.append(slashes * 2, L'\\');
+	result += L'"';
+	return result;
+}
+
+bool AddAddressOffset(uint64_t base, int64_t offset, uint64_t& result) {
+	if (offset >= 0) {
+		const auto amount = static_cast<uint64_t>(offset);
+		if (base > UINT64_MAX - amount) return false;
+		result = base + amount;
+	} else {
+		const auto amount = static_cast<uint64_t>(-(offset + 1)) + 1;
+		if (base < amount) return false;
+		result = base - amount;
+	}
+	return true;
+}
 } // anonymous namespace
 
 namespace veh::dap {
@@ -67,22 +111,179 @@ void DapServer::SetTransport(Transport* transport) {
 	});
 }
 
+bool DapServer::GuestSupports(IpcCommand command) const {
+	return guestTarget_ && IsCommandSupported(guestCommands_, command);
+}
+
+bool DapServer::AttachGuestAgent(const Request& req, std::string& error) {
+	if (ipcTransport_->IsConnected()) {
+		error = "Disconnect the current target before attaching another";
+		return false;
+	}
+	if (!req.arguments.contains("processId") || !req.arguments["processId"].is_number_integer()) {
+		error = "Guest attach requires a numeric processId";
+		return false;
+	}
+	const int64_t rawPid = req.arguments["processId"].get<int64_t>();
+	if (rawPid <= 0 || rawPid > UINT32_MAX) {
+		error = "Guest processId is outside the 32-bit PID range";
+		return false;
+	}
+	const uint32_t pid = static_cast<uint32_t>(rawPid);
+	if (!req.arguments.contains("agent") || !req.arguments["agent"].is_string()) {
+		error = "Guest attach requires an agent executable path";
+		return false;
+	}
+	const std::string agentPath = req.arguments["agent"].get<std::string>();
+	const std::wstring widePath = Utf8ToWide(agentPath);
+	std::error_code ec;
+	if (widePath.empty() || !std::filesystem::path(widePath).is_absolute() ||
+		!std::filesystem::is_regular_file(std::filesystem::path(widePath), ec)) {
+		error = "Guest agent must be an existing absolute executable path";
+		return false;
+	}
+	std::vector<std::wstring> args;
+	if (req.arguments.contains("agentArgs")) {
+		if (!req.arguments["agentArgs"].is_array()) {
+			error = "agentArgs must be an array of strings";
+			return false;
+		}
+		for (const auto& arg : req.arguments["agentArgs"]) {
+			if (!arg.is_string()) {
+				error = "agentArgs must be an array of strings";
+				return false;
+			}
+			const std::string narrow = arg.get<std::string>();
+			const std::wstring wide = Utf8ToWide(narrow);
+			if (wide.empty() && !narrow.empty()) {
+				error = "agentArgs must contain valid UTF-8 strings";
+				return false;
+			}
+			args.push_back(wide);
+		}
+	}
+	if (req.arguments.contains("stopOnModuleLoad") &&
+		!req.arguments["stopOnModuleLoad"].empty()) {
+		error = "Guest stopOnModuleLoad is not supported by this DAP adapter";
+		return false;
+	}
+	uint64_t nonce = 0;
+	if (BCryptGenRandom(nullptr, reinterpret_cast<PUCHAR>(&nonce), sizeof(nonce),
+		BCRYPT_USE_SYSTEM_PREFERRED_RNG) < 0) {
+		error = "Could not create a guest agent pipe name";
+		return false;
+	}
+	wchar_t pipe[100];
+	swprintf_s(pipe, L"\\\\.\\pipe\\veh-dap-guest-%u-%016llx",
+		pid, static_cast<unsigned long long>(nonce));
+	std::wstring command = QuoteWindowsArg(widePath) + L" --pid " + std::to_wstring(pid) +
+		L" --pipe " + QuoteWindowsArg(pipe);
+	for (const auto& arg : args) command += L" " + QuoteWindowsArg(arg);
+	STARTUPINFOW startup{sizeof(startup)};
+	PROCESS_INFORMATION process{};
+	if (!CreateProcessW(widePath.c_str(), command.data(), nullptr, nullptr, FALSE,
+		CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process)) {
+		error = "Could not start guest agent (Win32 error " + std::to_string(GetLastError()) + ")";
+		return false;
+	}
+	CloseHandle(process.hThread);
+	ipcTransport_ = std::make_unique<PipeClient>(pipe, 30000);
+	auto abort = [&] {
+		ipcTransport_->Disconnect();
+		ipcTransport_ = std::make_unique<PipeClient>();
+		if (WaitForSingleObject(process.hProcess, 0) == WAIT_TIMEOUT) {
+			TerminateProcess(process.hProcess, 1); // only the child just started for this failed attach
+		}
+		CloseHandle(process.hProcess);
+	};
+	if (!ipcTransport_->Connect(pid, 5000)) {
+		error = "Guest agent pipe did not come up";
+		abort();
+		return false;
+	}
+	if (ipcTransport_->PeerProcessId() != process.dwProcessId) {
+		error = "Guest agent pipe is served by a different process";
+		abort();
+		return false;
+	}
+	// Ready is consumed by PipeClient. Stop events (breakpoint, step, exception)
+	// become DAP stopped events like a host session; only advertised commands
+	// can produce them.
+	ipcTransport_->StartEventListener([this](uint32_t eventId, const uint8_t* payload, uint32_t size) {
+		OnIpcEvent(eventId, payload, size);
+	});
+	if (!ipcTransport_->WaitForReady(3000)) {
+		error = "Guest agent did not send Ready";
+		abort();
+		return false;
+	}
+	std::vector<uint8_t> bytes;
+	GetCapabilitiesResponse caps{};
+	if (!ipcTransport_->SendAndReceive(IpcCommand::GetCapabilities, nullptr, 0, bytes) ||
+		bytes.size() != sizeof(caps)) {
+		error = "Guest agent did not provide complete capabilities";
+		abort();
+		return false;
+	}
+	std::memcpy(&caps, bytes.data(), sizeof(caps));
+	if (caps.status != IpcStatus::Ok || caps.backend != IpcBackend::Hypervisor ||
+		(caps.flags & kCapGuestTarget) == 0 || (caps.flags & kCapVirtualMachineTarget) != 0 ||
+		!IsCommandSupported(caps.commands, IpcCommand::GetTargetInfo) ||
+		!IsCommandSupported(caps.commands, IpcCommand::Detach)) {
+		error = "Agent did not declare a detachable guest process backend";
+		abort();
+		return false;
+	}
+	bytes.clear();
+	GetTargetInfoResponse target{};
+	if (!ipcTransport_->SendAndReceive(IpcCommand::GetTargetInfo, nullptr, 0, bytes) ||
+		bytes.size() != sizeof(target)) {
+		error = "Guest agent did not provide complete target metadata";
+		abort();
+		return false;
+	}
+	std::memcpy(&target, bytes.data(), sizeof(target));
+	if (target.status != IpcStatus::Ok || target.scope != IpcTargetScope::Guest ||
+		target.pid != pid || (target.addressBits != 32 && target.addressBits != 64)) {
+		error = "Guest target PID, scope or address width did not match";
+		abort();
+		return false;
+	}
+	targetPid_ = pid;
+	launchedByUs_ = false;
+	guestTarget_ = true;
+	guestAddressBits_ = target.addressBits;
+	stopOnModuleLoadPatterns_.clear();
+	guestAgentProcess_ = process.hProcess;
+	std::memcpy(guestCommands_, caps.commands, sizeof(guestCommands_));
+	disassembler_ = veh::CreateDisassembler(target.addressBits == 64);
+	ipcTransport_->StartHeartbeat();
+	return true;
+}
+
 void DapServer::Run() {
 	running_ = true;
 	StartRetryThread();
 	transport_->Start();
 
-	// 메인 루프 — transport가 종료될 때까지 대기
-	while (running_) {
-		Sleep(100);
+	// Stop/disconnect signals this wait; no periodic adapter state polling.
+	{
+		std::unique_lock<std::mutex> lock(runMutex_);
+		runCv_.wait(lock, [this] { return !running_.load(); });
 	}
 
+	// Join the transport reader before destroying its callback target (this server).
+	transport_->Stop();
 	Cleanup();
 	StopRetryThread();
 }
 
 void DapServer::Stop() {
-	running_ = false;
+	{
+		std::lock_guard<std::mutex> lock(runMutex_);
+		running_ = false;
+	}
+	runCv_.notify_all();
 }
 
 void DapServer::OnMessage(const std::string& jsonStr) {
@@ -103,6 +304,53 @@ void DapServer::OnMessage(const std::string& jsonStr) {
 void DapServer::HandleRequest(const Request& req) {
 	LOG_DEBUG("Request: %s (seq=%d)", req.command.c_str(), req.seq);
 	DAP_TRACE("REQUEST", req.command + " | " + req.arguments.dump());
+
+	if (guestTarget_) {
+		const bool allowed = req.command == "disconnect" ||
+			req.command == "configurationDone" || req.command == "cancel" ||
+			(req.command == "threads" && GuestSupports(IpcCommand::GetThreads)) ||
+			(req.command == "readMemory" && GuestSupports(IpcCommand::ReadMemory)) ||
+			(req.command == "writeMemory" && GuestSupports(IpcCommand::WriteMemory)) ||
+			(req.command == "disassemble" && GuestSupports(IpcCommand::ReadMemory)) ||
+			// Execution control on the backend's selected-thread stops. Steps are
+			// instruction steps (no guest symbols); frames come from registers.
+			(req.command == "setInstructionBreakpoints" && GuestSupports(IpcCommand::SetBreakpoint) &&
+				GuestSupports(IpcCommand::RemoveBreakpoint)) ||
+			// Host-side PDB symbols of the guest backend: source and function breakpoints.
+			(req.command == "setBreakpoints" && GuestSupports(IpcCommand::ResolveSourceLine) &&
+				GuestSupports(IpcCommand::SetBreakpoint) && GuestSupports(IpcCommand::RemoveBreakpoint)) ||
+			(req.command == "setFunctionBreakpoints" && GuestSupports(IpcCommand::ResolveFunction) &&
+				GuestSupports(IpcCommand::SetBreakpoint) && GuestSupports(IpcCommand::RemoveBreakpoint)) ||
+			(req.command == "source" && GuestSupports(IpcCommand::Symbolize)) ||
+			((req.command == "setDataBreakpoints" || req.command == "dataBreakpointInfo") &&
+				GuestSupports(IpcCommand::SetHwBreakpoint) && GuestSupports(IpcCommand::RemoveHwBreakpoint)) ||
+			(req.command == "continue" && GuestSupports(IpcCommand::Continue)) ||
+			(req.command == "pause" && GuestSupports(IpcCommand::Pause)) ||
+			(req.command == "next" && GuestSupports(IpcCommand::StepOver)) ||
+			(req.command == "stepIn" && GuestSupports(IpcCommand::StepInto)) ||
+			(req.command == "stepOut" && GuestSupports(IpcCommand::StepOut)) ||
+			((req.command == "stackTrace" || req.command == "scopes" || req.command == "variables") &&
+				GuestSupports(IpcCommand::GetRegisters)) ||
+			req.command == "exceptionInfo" ||
+			// Exception stops are reported by the guest backend; the filters are accepted.
+			(req.command == "setExceptionBreakpoints" && GuestSupports(IpcCommand::Continue)) ||
+			(req.command == "terminate" && GuestSupports(IpcCommand::Terminate)) ||
+			(req.command == "terminateThreads" && GuestSupports(IpcCommand::TerminateThread)) ||
+			((req.command == "evaluate" || req.command == "completions") && GuestSupports(IpcCommand::GetRegisters)) ||
+			(req.command == "setVariable" && GuestSupports(IpcCommand::SetRegister)) ||
+			(req.command == "modules" && GuestSupports(IpcCommand::GetModules)) ||
+			(req.command == "loadedSources" && GuestSupports(IpcCommand::Symbolize)) ||
+			((req.command == "goto" || req.command == "gotoTargets") && GuestSupports(IpcCommand::SetInstructionPointer));
+		if (!allowed) {
+			Response resp;
+			resp.request_seq = req.seq;
+			resp.command = req.command;
+			resp.success = false;
+			resp.message = "DAP command is not supported for this guest session: " + req.command;
+			SendResponse(resp);
+			return;
+		}
+	}
 
 	// 명령어 디스패치
 	#define HANDLE_CMD(name, fn) if (req.command == name) { fn(req); return; }
@@ -181,6 +429,8 @@ void DapServer::SendEvent(const std::string& event, const json& body) {
 		{"event", event},
 		{"body", body},
 	};
+	// A guest backend stops only the selected thread; its siblings keep running.
+	if (guestTarget_ && event == "stopped") j["body"]["allThreadsStopped"] = false;
 	{
 		std::lock_guard<std::mutex> lock(sendMutex_);
 		j["seq"] = seq_++;
@@ -202,6 +452,17 @@ void DapServer::OnInitialize(const Request& req) {
 }
 
 void DapServer::OnLaunch(const Request& req) {
+	if (req.arguments.value("targetScope", "host") != "host") {
+		// A guest process can only be attached: starting one inside the guest
+		// would need an in-guest agent, and the program path names no host file.
+		Response resp;
+		resp.request_seq = req.seq;
+		resp.command = "launch";
+		resp.success = false;
+		resp.message = "guest targets are attach-only: launch requires targetScope=host";
+		SendResponse(resp);
+		return;
+	}
 	programPath_ = req.arguments.value("program", "");
 	std::string cwd = req.arguments.value("cwd", "");
 	stopOnEntry_ = req.arguments.value("stopOnEntry", false);
@@ -328,6 +589,28 @@ void DapServer::OnLaunch(const Request& req) {
 }
 
 void DapServer::OnAttach(const Request& req) {
+	const std::string scope = req.arguments.value("targetScope", "host");
+	if (scope != "host") {
+		Response resp;
+		resp.request_seq = req.seq;
+		resp.command = "attach";
+		if (scope == "guest") resp.success = AttachGuestAgent(req, resp.message);
+		else {
+			resp.success = false;
+			resp.message = "DAP targetScope must be host or guest";
+		}
+		SendResponse(resp);
+		return;
+	}
+	if (req.arguments.contains("agent") || req.arguments.contains("agentArgs")) {
+		Response resp;
+		resp.request_seq = req.seq;
+		resp.command = "attach";
+		resp.success = false;
+		resp.message = "External agent attachment requires targetScope=guest";
+		SendResponse(resp);
+		return;
+	}
 	targetPid_ = req.arguments.value("processId", 0);
 	injectionMethod_ = ParseInjectionMethod(req.arguments.value("injectionMethod", "auto"));
 
@@ -405,6 +688,42 @@ void DapServer::OnAttach(const Request& req) {
 
 void DapServer::OnDisconnect(const Request& req) {
 	bool terminateDebuggee = req.arguments.value("terminateDebuggee", launchedByUs_);
+	if (guestTarget_ && terminateDebuggee) {
+		Response resp;
+		resp.request_seq = req.seq;
+		resp.command = "disconnect";
+		resp.success = false;
+		resp.message = "Guest process termination is not supported by this DAP adapter";
+		SendResponse(resp);
+		return;
+	}
+	if (guestTarget_) {
+		Response resp;
+		resp.request_seq = req.seq;
+		resp.command = "disconnect";
+		std::vector<uint8_t> reply;
+		IpcStatus status{};
+		if (!GuestSupports(IpcCommand::Detach) ||
+			!ipcTransport_->SendAndReceive(IpcCommand::Detach, nullptr, 0, reply, 5000) ||
+			reply.size() != sizeof(status)) {
+			resp.success = false;
+			resp.message = "Guest backend detach reply is unavailable; session retained";
+			SendResponse(resp);
+			return;
+		}
+		std::memcpy(&status, reply.data(), sizeof(status));
+		if (status != IpcStatus::Ok) {
+			resp.success = false;
+			resp.message = "Guest backend detach failed; session retained";
+			SendResponse(resp);
+			return;
+		}
+		resp.success = true;
+		SendResponse(resp);
+		Cleanup(/*detachOnly=*/true, /*backendDetached=*/true);
+		Stop();
+		return;
+	}
 
 	// 응답을 Cleanup보다 먼저 전송한다.
 	// Cleanup()은 DLL에 Shutdown/Detach IPC를 보내고 파이프를 닫는데,
@@ -431,7 +750,7 @@ void DapServer::OnDisconnect(const Request& req) {
 		}
 	}
 
-	running_ = false;
+	Stop();
 }
 
 void DapServer::OnTerminate(const Request& req) {
@@ -442,6 +761,18 @@ void DapServer::OnTerminate(const Request& req) {
 	resp.request_seq = req.seq;
 	resp.command = "terminate";
 	resp.success = true;
+	if (guestTarget_) {
+		// A guest PID names no host process: the backend ends the target
+		// itself (Ok only after it attested the exit).
+		TerminateRequest term{0};
+		std::vector<uint8_t> reply;
+		resp.success = ipcTransport_->SendAndReceive(IpcCommand::Terminate, &term, sizeof(term), reply) &&
+			reply.size() >= sizeof(IpcStatus) && *reinterpret_cast<const IpcStatus*>(reply.data()) == IpcStatus::Ok;
+		if (!resp.success) resp.message = "guest target termination failed";
+		SendResponse(resp);
+		if (resp.success && !terminated_.exchange(true)) SendEvent("terminated");
+		return;
+	}
 	SendResponse(resp);
 
 	if (targetPid_) {
@@ -1056,7 +1387,7 @@ void DapServer::OnNext(const Request& req) {
 		std::lock_guard<std::mutex> stepLock(steppingMutex_);
 		steppingMode_ = SteppingMode::Over;
 		steppingThreadId_ = threadId;
-		steppingInstruction_ = (granularity == "instruction");
+		steppingInstruction_ = guestTarget_ || (granularity == "instruction");
 		steppingStartAddr_ = 0;
 		steppingNextLineAddr_ = 0;
 		steppingSourceLine_ = 0;
@@ -1224,7 +1555,7 @@ void DapServer::OnStepIn(const Request& req) {
 		std::lock_guard<std::mutex> stepLock(steppingMutex_);
 		steppingMode_ = SteppingMode::In;
 		steppingThreadId_ = threadId;
-		steppingInstruction_ = (granularity == "instruction");
+		steppingInstruction_ = guestTarget_ || (granularity == "instruction");
 		steppingStartAddr_ = 0;
 		steppingNextLineAddr_ = 0;
 	}
@@ -1301,33 +1632,62 @@ void DapServer::OnPause(const Request& req) {
 // --- State Queries ---
 
 void DapServer::OnThreads(const Request& req) {
-	std::vector<uint8_t> respData;
-	json threadsJson = json::array();
-
-	if (ipcTransport_->SendAndReceive(IpcCommand::GetThreads, nullptr, 0, respData)) {
-		if (respData.size() >= sizeof(GetThreadsResponse)) {
-			auto* hdr = reinterpret_cast<const GetThreadsResponse*>(respData.data());
-			auto* threads = reinterpret_cast<const ThreadInfo*>(respData.data() + sizeof(GetThreadsResponse));
-			uint32_t maxCount = (uint32_t)((respData.size() - sizeof(GetThreadsResponse)) / sizeof(ThreadInfo));
-			uint32_t count = std::min(hdr->count, maxCount);
-			for (uint32_t i = 0; i < count; i++) {
-				Thread t;
-				t.id = threads[i].id;
-				t.name = threads[i].name[0] ? threads[i].name : ("Thread " + std::to_string(threads[i].id));
-				threadsJson.push_back(t.ToJson());
-			}
-		}
-	}
-
-	if (threadsJson.empty()) {
-		// 최소한 메인 스레드 하나는 리턴
-		threadsJson.push_back(Thread{1, "Main Thread"}.ToJson());
-	}
-
 	Response resp;
 	resp.request_seq = req.seq;
 	resp.command = "threads";
-	resp.success = true;
+	std::vector<uint8_t> data;
+	if (!ipcTransport_->SendAndReceive(IpcCommand::GetThreads, nullptr, 0, data)) {
+		resp.success = false;
+		resp.message = "GetThreads IPC failed";
+		SendResponse(resp);
+		return;
+	}
+	if (data.size() < sizeof(IpcStatus)) {
+		resp.success = false;
+		resp.message = "GetThreads response is incomplete";
+		SendResponse(resp);
+		return;
+	}
+	IpcStatus status{};
+	std::memcpy(&status, data.data(), sizeof(status));
+	if (status != IpcStatus::Ok) {
+		resp.success = false;
+		resp.message = "GetThreads backend status " + std::to_string(static_cast<uint32_t>(status));
+		SendResponse(resp);
+		return;
+	}
+	GetThreadsResponse header{};
+	if (data.size() < sizeof(header)) {
+		resp.success = false;
+		resp.message = "GetThreads response is incomplete";
+		SendResponse(resp);
+		return;
+	}
+	std::memcpy(&header, data.data(), sizeof(header));
+	const size_t payloadSize = data.size() - sizeof(header);
+	if (payloadSize % sizeof(ThreadInfo) != 0 ||
+		header.count != payloadSize / sizeof(ThreadInfo)) {
+		resp.success = false;
+		resp.message = "GetThreads response length mismatch";
+		SendResponse(resp);
+		return;
+	}
+	json threadsJson = json::array();
+	for (uint32_t i = 0; i < header.count; ++i) {
+		ThreadInfo info{};
+		std::memcpy(&info, data.data() + sizeof(header) + static_cast<size_t>(i) * sizeof(info), sizeof(info));
+		const auto* end = static_cast<const char*>(std::memchr(info.name, '\0', sizeof(info.name)));
+		if (!end) {
+			resp.success = false;
+			resp.message = "GetThreads name is unterminated";
+			SendResponse(resp);
+			return;
+		}
+		Thread thread;
+		thread.id = info.id;
+		thread.name = info.name[0] ? std::string(info.name, static_cast<size_t>(end - info.name)) : "Thread " + std::to_string(info.id);
+		threadsJson.push_back(thread.ToJson());
+	}
 	resp.body = {{"threads", threadsJson}};
 	SendResponse(resp);
 }
@@ -2010,19 +2370,27 @@ void DapServer::OnReadMemory(const Request& req) {
 		SendResponse(resp);
 		return;
 	}
-	addr += offset;
+	Response resp;
+	resp.request_seq = req.seq;
+	resp.command = "readMemory";
+	if (!AddAddressOffset(addr, offset, addr) ||
+		addr > UINT64_MAX - static_cast<uint64_t>(count - 1) ||
+		(guestAddressBits_ == 32 &&
+			(addr > UINT32_MAX || static_cast<uint64_t>(count - 1) > UINT32_MAX - addr))) {
+		resp.success = false;
+		resp.message = "Memory address range is outside the target address space";
+		SendResponse(resp);
+		return;
+	}
 
 	ReadMemoryRequest readReq{};
 	readReq.address = addr;
 	readReq.size = count;
 
-	Response resp;
-	resp.request_seq = req.seq;
-	resp.command = "readMemory";
-
 	std::vector<uint8_t> respData;
 	if (ipcTransport_->SendAndReceive(IpcCommand::ReadMemory, &readReq, sizeof(readReq), respData) &&
 		respData.size() >= sizeof(IpcStatus) &&
+		respData.size() <= sizeof(IpcStatus) + static_cast<size_t>(count) &&
 		*reinterpret_cast<const IpcStatus*>(respData.data()) == IpcStatus::Ok) {
 		const uint8_t* memData = respData.data() + sizeof(IpcStatus);
 		size_t memLen = respData.size() - sizeof(IpcStatus);
@@ -2096,6 +2464,15 @@ void DapServer::OnDisassemble(const Request& req) {
 	int instrCount = req.arguments.value("instructionCount", 50);
 	if (instrCount < 0) instrCount = 50;
 	if (instrCount > 10000) instrCount = 10000;
+	if (instrOffset < -10000 || instrOffset > 10000) {
+		Response resp;
+		resp.request_seq = req.seq;
+		resp.command = "disassemble";
+		resp.success = false;
+		resp.message = "instructionOffset is outside the supported range";
+		SendResponse(resp);
+		return;
+	}
 
 	uint64_t addr = 0;
 	if (!ParseAddress(memRef, addr)) {
@@ -2107,7 +2484,16 @@ void DapServer::OnDisassemble(const Request& req) {
 		SendResponse(resp);
 		return;
 	}
-	addr += offset;
+	if (!AddAddressOffset(addr, offset, addr) ||
+		(guestAddressBits_ == 32 && addr > UINT32_MAX)) {
+		Response resp;
+		resp.request_seq = req.seq;
+		resp.command = "disassemble";
+		resp.success = false;
+		resp.message = "Disassembly address is outside the target address space";
+		SendResponse(resp);
+		return;
+	}
 
 	// [CRITICAL FIX] instructionOffset 처리
 	// VSCode 디스어셈블리 뷰는 instructionOffset:-200, instructionCount:400 으로 요청하여
@@ -2131,6 +2517,17 @@ void DapServer::OnDisassemble(const Request& req) {
 	}
 
 	uint32_t readSize = (uint32_t)totalNeeded * 15;
+	if (readSize && (startAddr > UINT64_MAX - (readSize - 1) ||
+		(guestAddressBits_ == 32 &&
+			(startAddr > UINT32_MAX || static_cast<uint64_t>(readSize - 1) > UINT32_MAX - startAddr)))) {
+		Response resp;
+		resp.request_seq = req.seq;
+		resp.command = "disassemble";
+		resp.success = false;
+		resp.message = "Disassembly range is outside the target address space";
+		SendResponse(resp);
+		return;
+	}
 	ReadMemoryRequest readReq{};
 	readReq.address = startAddr;
 	readReq.size = readSize;
@@ -2477,7 +2874,8 @@ void DapServer::OnTerminateThreads(const Request& req) {
 	Response resp;
 	resp.request_seq = req.seq;
 	resp.command = "terminateThreads";
-	resp.success = true;
+	resp.success = allOk;
+	if (!allOk) resp.message = "a thread was not terminated";
 	SendResponse(resp);
 }
 
@@ -3067,10 +3465,11 @@ bool DapServer::EvaluateCondition(const std::string& condition, uint32_t threadI
 		if (!addrStr.empty() && addrStr.back() == ']') addrStr.pop_back();
 		try {
 			uint64_t addr = std::stoull(addrStr, nullptr, 0);
-			if (targetProcess_) {
-				SIZE_T bytesRead = 0;
-				ReadProcessMemory(targetProcess_, (LPCVOID)addr, &lhsVal, 8, &bytesRead);
-			}
+			// 읽지 못한 메모리(게스트 대상 포함)는 0 으로 비교하지 않고 중단한다.
+			SIZE_T bytesRead = 0;
+			if (!targetProcess_ ||
+				!ReadProcessMemory(targetProcess_, (LPCVOID)addr, &lhsVal, 8, &bytesRead) || bytesRead != 8)
+				return true;
 		} catch (...) { return true; }
 	} else if (TryParseRegisterName(lhs)) {
 		// 레지스터 — cachedRegs 우선 사용 (Reader 스레드에서 SendAndReceive 데드락 방지)
@@ -3459,22 +3858,32 @@ void DapServer::ResumeMainThread(uint32_t requestedThreadId) {
 	}
 }
 
-void DapServer::Cleanup(bool detachOnly) {
+void DapServer::Cleanup(bool detachOnly, bool backendDetached) {
 	// 모니터 스레드 먼저 정리 (double-close 방지)
 	StopProcessMonitor();
 
 	// 메인 스레드가 아직 suspended이면 resume (안 하면 프로세스가 좀비로 남음)
 	ResumeMainThread();
 
-	if (ipcTransport_->IsConnected()) {
+	if (ipcTransport_->IsConnected() && !backendDetached) {
 		// detachOnly=true: Detach 명령 → DLL 파이프 서버는 유지 (재연결 가능)
 		// detachOnly=false: Shutdown 명령 → DLL 파이프 서버도 종료
-		auto cmd = detachOnly ? IpcCommand::Detach : IpcCommand::Shutdown;
+		auto cmd = (guestTarget_ || detachOnly) ? IpcCommand::Detach : IpcCommand::Shutdown;
 		ipcTransport_->SendCommand(cmd);
-		LOG_INFO("Sent %s to DLL", detachOnly ? "Detach" : "Shutdown");
+		LOG_INFO("Sent %s to backend", cmd == IpcCommand::Detach ? "Detach" : "Shutdown");
 	}
 	// Disconnect는 항상 호출 (파이프 닫기 + 스레드 정리)
 	ipcTransport_->Disconnect();
+	if (guestAgentProcess_) {
+		CloseHandle(guestAgentProcess_);
+		guestAgentProcess_ = nullptr;
+	}
+	if (guestTarget_) {
+		guestTarget_ = false;
+		guestAddressBits_ = 0;
+		std::memset(guestCommands_, 0, sizeof(guestCommands_));
+		ipcTransport_ = std::make_unique<PipeClient>();
+	}
 
 	// 주: deferred 재시도 워커(retryThread_)는 Run() 생애 동안 유지되며 Run() 종료 시
 	// StopRetryThread()로 정리한다. Cleanup은 detach/restart에서도 불리므로 여기서 워커를

@@ -165,7 +165,8 @@ json McpServer::ToolAttach(const json& args) {
     if(!vm&&!pid)return {{"error","pid is required for host/guest attachment"}};
 	if (session_.IsAttached() && !(agent && agent->remote)) {
 		LOG_INFO("Auto-detaching from previous session (pid=%u) before new attach", session_.GetTargetPid());
-		ToolDetach({});
+		const auto detached = ToolDetach({});
+		if (detached.contains("error")) return detached;
 	} else if (session_.GetPipeClient().IsConnected() && !(agent && agent->remote)) {
 		LOG_WARN("Stale pipe connection detected, cleaning up");
 		session_.GetPipeClient().StopHeartbeat();
@@ -224,7 +225,8 @@ json McpServer::ToolLaunch(const json& args) {
         return {{"error", "Guest process launch is not supported yet. Start the program in the guest and attach with target_scope=guest."}};
 	if (session_.IsAttached() && !(agent && agent->remote)) {
 		LOG_INFO("Auto-detaching from previous session (pid=%u) before new launch", session_.GetTargetPid());
-		ToolDetach({});
+		const auto detached = ToolDetach({});
+		if (detached.contains("error")) return detached;
 	} else if (session_.GetPipeClient().IsConnected() && !(agent && agent->remote)) {
 		LOG_WARN("Stale pipe connection detected, cleaning up");
 		session_.GetPipeClient().StopHeartbeat();
@@ -394,7 +396,18 @@ json McpServer::ToolContinue(const json& args) {
 	// Check for cached stop event before sending Continue
 	if (wait && !passException) {
 		auto cached = session_.ConsumeCachedStop();
-		if (cached && IsCurrentStopEvent(*cached) && stillStopped(*cached)) {
+		// A breakpoint stop is current only while the thread is still at its
+		// address (live, guest backend: a duplicate hit event delivered after a
+		// trace moved the thread to the function's return made the next
+		// continue return at once without resuming).
+		const auto atStop = [this](const StopEvent& ev) {
+			if (ev.reason != "breakpoint" || !ev.threadId) return true;
+			const auto regs = session_.GetRegisters(ev.threadId);
+			if (!regs) return true;
+			const uint64_t rip = regs->is32bit ? (regs->rip & 0xFFFFFFFFull) : regs->rip;
+			return rip == ev.address;
+		};
+		if (cached && IsCurrentStopEvent(*cached) && stillStopped(*cached) && atStop(*cached)) {
 			json ret = {
 				{"stopped", true},
 				{"reason", cached->reason},
@@ -559,10 +572,30 @@ json McpServer::ToolStepOut(const json& args) {
 	session_.ResumeMainThread();
 	uint32_t threadId = JsonUint32(args, "threadId");
 	if (threadId == 0) return {{"error", "threadId is required"}};
+	const int timeoutSec = std::clamp(args.value("timeout", 30), 1, 300);
+	{
+		std::lock_guard<std::mutex> lock(stepMutex_);
+		stepCompleted_ = false;
+		stepCompletedAddr_ = 0;
+		stepCompletedThread_ = 0;
+	}
 
 	if (const IpcStatus st = session_.StepOut(threadId); st != IpcStatus::Ok)
 		return {{"error", StepRefusedMessage(threadId, st)}};
-	return {{"success", true}, {"threadId", threadId}};
+	// Like step_in: report where the step out stopped. A function can run
+	// long before it returns, so the wait is bounded by `timeout`.
+	std::unique_lock<std::mutex> lock(stepMutex_);
+	if (!stepCv_.wait_for(lock, std::chrono::seconds(timeoutSec), [this, threadId]{
+			return (stepCompleted_ && stepCompletedThread_ == threadId) || !session_.IsAttached();
+		})) {
+		return {{"error", "Step out did not complete within " + std::to_string(timeoutSec) + " s (threadId=" +
+			std::to_string(threadId) + "); the thread is still running toward its return."}};
+	}
+	if (!(stepCompleted_ && stepCompletedThread_ == threadId) && !session_.IsAttached()) {
+		return {{"error", "Target process exited during step out"}};
+	}
+	return {{"success", true}, {"threadId", threadId},
+		{"instructionPointer", (std::ostringstream() << "0x" << std::hex << stepCompletedAddr_).str()}};
 }
 
 json McpServer::ToolPause(const json& args) {

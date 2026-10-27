@@ -30,13 +30,20 @@ public:
 	bool Handshake(std::string* stop, std::string* error);
 	// One request, one reply (empty reply = unsupported); false on timeout or a broken link.
 	bool Request(const std::string& packet, std::string* reply, uint32_t timeout_ms = 5000);
+	// qRcmd: the console output, collected from O packets until OK (or one
+	// hex reply from stubs that answer in a single packet).
+	bool Monitor(const std::string& hex_command, std::string* hex_output, uint32_t timeout_ms = 10000);
 	// Resume (c / vCont;s:N): no reply until the target stops again.
 	bool Resume(const std::string& packet);
 	// Stop reply after Resume; false on timeout (the target keeps running).
 	bool WaitStop(std::string* stop, uint32_t timeout_ms);
 	bool Interrupt(std::string* stop, uint32_t timeout_ms); // 0x03
+	// '?' after a lost stop reply: true when the stub answers a stop reason.
+	bool QueryStop(std::string* stop, uint32_t timeout_ms);
 	bool running() const { return running_; }
 	const std::string& last_stop() const { return last_stop_; }
+	// Why the last WaitStop failed (the server's stderr is not kept).
+	const std::string& wait_diagnostic() const { return wait_diagnostic_; }
 
 private:
 	bool Send(const std::string& payload);
@@ -47,6 +54,12 @@ private:
 	bool ack_ = true;
 	bool running_ = false;
 	std::string last_stop_;
+	std::string wait_diagnostic_;
+	// The last bytes on the link (">" sent, "<" received), for diagnostics.
+	std::string trace_;
+	void Trace(char dir, const char* data, size_t n);
+public:
+	const std::string& trace() const { return trace_; }
 };
 
 } // namespace veh

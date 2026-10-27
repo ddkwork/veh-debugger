@@ -248,7 +248,12 @@ function Invoke-ReleaseTests {
         'test/test_trace_code_stream_failure.py',
         'test/test_mcp_profiles.py',
         'test/test_trace_heartbeat_long.py',
-        'test/test_remote_transport.py'
+        'test/test_remote_transport.py',
+        'test/test_guest_backend.py',
+        'test/test_vm_attach.py',
+        'test/test_dap_guest_attach.py',
+        'test/test_dap_thread_errors.py',
+        'test/test_kernel_debug_protocol.py'
     )
     foreach ($test in $tests) {
         $name = [System.IO.Path]::GetFileNameWithoutExtension($test)
@@ -257,6 +262,11 @@ function Invoke-ReleaseTests {
     }
     Invoke-Logged 'batch-profiles-x86' 'py' @(
         '-3', 'tools/run_tests.py', 'test_batch_unified.py', 'test_mcp_profiles.py',
+        '--build-dir', 'build32', '--jobs', '1', '--timeout', '180'
+    )
+    Invoke-Logged 'guest-protocol-x86' 'py' @(
+        '-3', 'tools/run_tests.py', 'test_guest_backend.py', 'test_vm_attach.py',
+        'test_dap_guest_attach.py', 'test_dap_thread_errors.py', 'test_kernel_debug_protocol.py',
         '--build-dir', 'build32', '--jobs', '1', '--timeout', '180'
     )
     Invoke-Logged 'trace-parity-x64-x86' 'py' @(

@@ -137,6 +137,16 @@ veh-debug-adapter.exe           veh-mcp-server.exe
   └────── veh-debugger.dll (injected into target) ──────┘
 ```
 
+## External guest debugging
+
+DAP attach accepts `targetScope="guest"`, `processId`, an absolute `agent`
+executable and optional `agentArgs`. The adapter validates the IPC peer and
+reported guest PID/address width. Backend capabilities gate memory/register
+inspection and writes, continue/pause, instruction steps, execution/data
+breakpoints, symbol-based source/function breakpoints and termination.
+Unsupported commands return errors. Stops identify the selected thread;
+guest launch, `stopOnEntry` and `stopOnModuleLoad` remain unsupported.
+
 ## Requirements
 
 - Windows 10 or later (x64)
@@ -180,5 +190,7 @@ target, OS thread identity or single process address width. VM agents receive
 `--pipe` and configured arguments; process agents also receive `--pid`.
 Use `veh_virtual_machine` for explicit whole-VM control and bounded vCPU records.
 Physical memory read/write is available when advertised; search/dump needs a
-server operation and is unavailable in VM scope. Guest process attachment still
-uses `target_scope="guest"` and a validated nonzero guest PID.
+server operation and is unavailable in VM scope. A capable backend exposes
+`veh_processes` for one guest OS process snapshot; use a returned PID with
+`veh_attach(target_scope="guest")`. Short image names escape non-ASCII bytes as
+`\\xNN`. Guest process attachment still uses a validated nonzero guest PID.
