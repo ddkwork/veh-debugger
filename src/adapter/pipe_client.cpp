@@ -207,7 +207,9 @@ bool PipeClient::SendAndReceive(IpcCommand cmd,
 	// 요청 뮤텍스를 잡은 뒤 확인한다: 앞선 요청의 타임아웃이 그 사이에 설정할 수 있다.
 	{
 		std::lock_guard<std::mutex> lock(responseMutex_);
-		if (desynced_) {
+		// Detach/Shutdown 은 허용한다: 늦은 응답은 명령이 다르면 이 요청을 충족할 수 없고,
+		// 막으면 오염된 연결을 정리할 길이 없다.
+		if (desynced_ && cmd != IpcCommand::Detach && cmd != IpcCommand::Shutdown) {
 			report(PipeExchangeFailure::SendFailed, ERROR_INVALID_STATE);
 			return false;
 		}
