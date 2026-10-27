@@ -202,6 +202,9 @@ bool PipeClient::SendAndReceive(IpcCommand cmd,
 		diagnostics->systemError = systemError;
 		diagnostics->advertisedPayloadSize = advertisedPayloadSize;
 	};
+	report(PipeExchangeFailure::None);
+	std::lock_guard<std::mutex> sendLock(sendReceiveMutex_);
+	// 요청 뮤텍스를 잡은 뒤 확인한다: 앞선 요청의 타임아웃이 그 사이에 설정할 수 있다.
 	{
 		std::lock_guard<std::mutex> lock(responseMutex_);
 		if (desynced_) {
@@ -209,8 +212,6 @@ bool PipeClient::SendAndReceive(IpcCommand cmd,
 			return false;
 		}
 	}
-	report(PipeExchangeFailure::None);
-	std::lock_guard<std::mutex> sendLock(sendReceiveMutex_);
 	struct RequestInFlightGuard {
 		std::mutex& mutex;
 		bool& active;
@@ -233,6 +234,9 @@ bool PipeClient::SendAndReceive(IpcCommand cmd,
 
 		IpcHeader respHdr;
 		if (!AsyncReadExact(&respHdr, sizeof(respHdr), timeoutMs)) {
+			const DWORD error = GetLastError();
+			{ std::lock_guard<std::mutex> lock(responseMutex_); desynced_ = true; }
+			SetLastError(error);
 			report(PipeExchangeFailure::HeaderReadFailed, GetLastError());
 			return false;
 		}
@@ -246,6 +250,9 @@ bool PipeClient::SendAndReceive(IpcCommand cmd,
 		response.resize(respHdr.payloadSize);
 		if (respHdr.payloadSize > 0) {
 			if (!AsyncReadExact(response.data(), respHdr.payloadSize, timeoutMs)) {
+				const DWORD error = GetLastError();
+				{ std::lock_guard<std::mutex> lock(responseMutex_); desynced_ = true; }
+				SetLastError(error);
 				report(PipeExchangeFailure::PayloadReadFailed, GetLastError(), respHdr.payloadSize);
 				return false;
 			}
